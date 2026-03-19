@@ -837,26 +837,29 @@ const VENDOR_INGEST={
       const base={'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],kind:'event',original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};
 
       // ── SSH (sshd) ──
-      const sshAuth=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed password for(?: invalid user)?)\s+(?:(?:password|publickey)\s+for\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
+      // Accepted/Failed — capture method (password|publickey) explicitly
+      const sshAuth=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed)\s+(password|publickey)\s+for\s+(?:invalid user\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
       if(sshAuth){
-        const ok=sshAuth[3].startsWith('Accepted');
+        const ok=sshAuth[3]==='Accepted',method=sshAuth[4],user=sshAuth[5],ip=sshAuth[6],port=parseInt(sshAuth[7]);
         return{...base,
           host:{name:sshAuth[1],hostname:sshAuth[1]},
           process:{name:'sshd',pid:parseInt(sshAuth[2])},
-          user:{name:sshAuth[5]},
-          source:{ip:sshAuth[6],address:sshAuth[6],port:parseInt(sshAuth[7])},
+          user:{name:user},
+          source:{ip,address:ip,port},
           event:{...base.event,category:['authentication'],type:[ok?'start':'info'],action:ok?'ssh-login':'ssh-login-failure',outcome:ok?'success':'failure'},
+          system:{auth:{ssh:{event:sshAuth[3],method,ip,port},user}},
         };
       }
       // session opened/closed
       const sshSess=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+session (opened|closed) for user (\S+)/);
       if(sshSess){
-        const opened=sshSess[3]==='opened';
+        const opened=sshSess[3]==='opened',user=sshSess[4];
         return{...base,
           host:{name:sshSess[1],hostname:sshSess[1]},
           process:{name:'sshd',pid:parseInt(sshSess[2])},
-          user:{name:sshSess[4]},
+          user:{name:user},
           event:{...base.event,category:['authentication','session'],type:[opened?'start':'end'],action:opened?'ssh-session-opened':'ssh-session-closed',outcome:'success'},
+          system:{auth:{ssh:{event:opened?'Opened':'Closed'},user}},
         };
       }
       // max auth attempts / disconnect / connection closed
@@ -867,47 +870,51 @@ const VENDOR_INGEST={
           process:{name:'sshd',pid:parseInt(sshMisc[2])},
           source:{ip:sshMisc[3],address:sshMisc[3]},
           event:{...base.event,category:['authentication'],type:['info'],action:'ssh-disconnect',outcome:l.includes('maximum')?'failure':'unknown'},
+          system:{auth:{ssh:{event:l.includes('maximum')?'MaxAuthAttempts':'Disconnected',ip:sshMisc[3]}}},
         };
       }
 
       // ── sudo ──
-      // "Jan  5 10:30:00 host sudo: jsmith : TTY=pts/0 ; PWD=/home/jsmith ; USER=root ; COMMAND=/bin/cmd"
-      const sudo=l.match(/^[\w\s:]+\s+(\S+)\s+sudo:\s+(\S+)\s+:(.+)COMMAND=(.+)$/);
+      // success: "host sudo[pid]: user : TTY=pts/0 ; PWD=... ; USER=root ; COMMAND=..."
+      // failure: "host sudo: user : NOT in sudoers / command not allowed ; ..."
+      const sudo=l.match(/^[\w\s:]+\s+(\S+)\s+sudo(?:\[\d+\])?:\s+(\S+)\s+:(.+?)COMMAND=(.+)$/);
       if(sudo){
-        const fail=l.includes('NOT in sudoers');
-        const cmdMatch=sudo[4]?.trim();
+        const fail=l.includes('NOT in sudoers')||l.includes('not allowed');
+        const cmd=sudo[4]?.trim(),tty=l.match(/TTY=(\S+)/)?.[1]||'pts/0',user=sudo[2];
+        const errMsg=l.includes('NOT in sudoers')?'user is not in the sudoers file':l.includes('not allowed')?'command not allowed':undefined;
         return{...base,
           host:{name:sudo[1],hostname:sudo[1]},
-          process:{name:'sudo',command_line:cmdMatch},
-          user:{name:sudo[2],target:{name:'root'}},
+          process:{name:'sudo',command_line:cmd},
+          user:{name:user,target:{name:'root'}},
           event:{...base.event,category:['process','iam'],type:['start'],action:'sudo',outcome:fail?'failure':'success'},
+          system:{auth:{sudo:{user,command:cmd,tty,...(errMsg?{error:errMsg}:{})},user}},
         };
       }
 
       // ── User / Group management ──
-      // useradd:  "host useradd[pid]: new user: name=jsmith, UID=1001, ..."
-      const useradd=l.match(/(\S+)\s+useradd\[(\d+)\]:\s+new user:\s+name=([^,]+)/);
-      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'}};
-      // userdel:  "host userdel[pid]: delete user 'jsmith'"
+      const useradd=l.match(/(\S+)\s+useradd\[(\d+)\]:\s+new user:\s+name=([^,]+),\s*UID=(\d+),\s*GID=(\d+),\s*home=([^,]+),\s*shell=(\S+)/);
+      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'},system:{auth:{useradd:{name:useradd[3],uid:useradd[4],gid:useradd[5],home:useradd[6],shell:useradd[7]},user:'root'}}};
+
       const userdel=l.match(/(\S+)\s+userdel\[(\d+)\]:\s+delete user '([^']+)'/);
-      if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'}};
-      // usermod / shadow group:  "host usermod[pid]: change user 'jsmith' ..." or "add 'x' to shadow group 'y'"
+      if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'},system:{auth:{useradd:{name:userdel[3]},user:'root'}}};
+
       const usermod=l.match(/(\S+)\s+usermod\[(\d+)\]:\s+(?:change user '([^']+)'|add '([^']+)' to shadow group '([^']+)')/);
-      if(usermod) return{...base,host:{name:usermod[1],hostname:usermod[1]},process:{name:'usermod',pid:parseInt(usermod[2])},user:{target:{name:usermod[3]||usermod[4]}},group:{name:usermod[5]},event:{...base.event,category:['iam'],type:['user','change'],action:'user-modified',outcome:'success'}};
-      // gpasswd add/remove:  "host gpasswd[pid]: user jsmith added by root to group sudo"
+      if(usermod) return{...base,host:{name:usermod[1],hostname:usermod[1]},process:{name:'usermod',pid:parseInt(usermod[2])},user:{target:{name:usermod[3]||usermod[4]}},group:{name:usermod[5]},event:{...base.event,category:['iam'],type:['user','change'],action:'user-modified',outcome:'success'},system:{auth:{useradd:{name:usermod[3]||usermod[4]},user:'root'}}};
+
       const gpasswdAdd=l.match(/(\S+)\s+gpasswd\[(\d+)\]:\s+user (\S+) added by (\S+) to group (\S+)/);
-      if(gpasswdAdd) return{...base,host:{name:gpasswdAdd[1],hostname:gpasswdAdd[1]},process:{name:'gpasswd',pid:parseInt(gpasswdAdd[2])},user:{name:gpasswdAdd[4],target:{name:gpasswdAdd[3]}},group:{name:gpasswdAdd[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-added-to-group',outcome:'success'}};
+      if(gpasswdAdd) return{...base,host:{name:gpasswdAdd[1],hostname:gpasswdAdd[1]},process:{name:'gpasswd',pid:parseInt(gpasswdAdd[2])},user:{name:gpasswdAdd[4],target:{name:gpasswdAdd[3]}},group:{name:gpasswdAdd[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-added-to-group',outcome:'success'},system:{auth:{groupadd:{name:gpasswdAdd[5]},user:gpasswdAdd[4]}}};
+
       const gpasswdRem=l.match(/(\S+)\s+gpasswd\[(\d+)\]:\s+user (\S+) removed by (\S+) from group (\S+)/);
-      if(gpasswdRem) return{...base,host:{name:gpasswdRem[1],hostname:gpasswdRem[1]},process:{name:'gpasswd',pid:parseInt(gpasswdRem[2])},user:{name:gpasswdRem[4],target:{name:gpasswdRem[3]}},group:{name:gpasswdRem[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-removed-from-group',outcome:'success'}};
-      // groupadd:  "host groupadd[pid]: new group: name=developers, GID=1002"
-      const groupadd=l.match(/(\S+)\s+groupadd\[(\d+)\]:\s+new group:\s+name=([^,]+)/);
-      if(groupadd) return{...base,host:{name:groupadd[1],hostname:groupadd[1]},process:{name:'groupadd',pid:parseInt(groupadd[2])},group:{name:groupadd[3]},event:{...base.event,category:['iam'],type:['group','creation'],action:'group-created',outcome:'success'}};
-      // groupdel:  "host groupdel[pid]: removed group 'developers'"
+      if(gpasswdRem) return{...base,host:{name:gpasswdRem[1],hostname:gpasswdRem[1]},process:{name:'gpasswd',pid:parseInt(gpasswdRem[2])},user:{name:gpasswdRem[4],target:{name:gpasswdRem[3]}},group:{name:gpasswdRem[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-removed-from-group',outcome:'success'},system:{auth:{groupadd:{name:gpasswdRem[5]},user:gpasswdRem[4]}}};
+
+      const groupadd=l.match(/(\S+)\s+groupadd\[(\d+)\]:\s+new group:\s+name=([^,]+),\s*GID=(\d+)/);
+      if(groupadd) return{...base,host:{name:groupadd[1],hostname:groupadd[1]},process:{name:'groupadd',pid:parseInt(groupadd[2])},group:{name:groupadd[3]},event:{...base.event,category:['iam'],type:['group','creation'],action:'group-created',outcome:'success'},system:{auth:{groupadd:{name:groupadd[3],gid:groupadd[4]},user:'root'}}};
+
       const groupdel=l.match(/(\S+)\s+groupdel\[(\d+)\]:\s+removed group '([^']+)'/);
-      if(groupdel) return{...base,host:{name:groupdel[1],hostname:groupdel[1]},process:{name:'groupdel',pid:parseInt(groupdel[2])},group:{name:groupdel[3]},event:{...base.event,category:['iam'],type:['group','deletion'],action:'group-deleted',outcome:'success'}};
-      // passwd / chage:  "host passwd[pid]: password changed for jsmith"
+      if(groupdel) return{...base,host:{name:groupdel[1],hostname:groupdel[1]},process:{name:'groupdel',pid:parseInt(groupdel[2])},group:{name:groupdel[3]},event:{...base.event,category:['iam'],type:['group','deletion'],action:'group-deleted',outcome:'success'},system:{auth:{groupadd:{name:groupdel[3]},user:'root'}}};
+
       const pwchange=l.match(/(\S+)\s+(passwd|chage)\[(\d+)\]:\s+(?:password changed|changed password expiry) for (\S+)/);
-      if(pwchange) return{...base,host:{name:pwchange[1],hostname:pwchange[1]},process:{name:pwchange[2],pid:parseInt(pwchange[3])},user:{target:{name:pwchange[4]}},event:{...base.event,category:['iam'],type:['user','change'],action:'password-changed',outcome:'success'}};
+      if(pwchange) return{...base,host:{name:pwchange[1],hostname:pwchange[1]},process:{name:pwchange[2],pid:parseInt(pwchange[3])},user:{target:{name:pwchange[4]}},event:{...base.event,category:['iam'],type:['user','change'],action:'password-changed',outcome:'success'},system:{auth:{useradd:{name:pwchange[4]},user:'root'}}};
 
       // ── auditd ──
       // "Jan  5 10:30:00 host audit[123]: type=SYSCALL msg=audit(1234.567:89): ... pid=456 uid=1000 exe="/usr/bin/curl""
