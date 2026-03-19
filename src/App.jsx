@@ -360,6 +360,9 @@ function makeCtx(){
     attacker:{ip:c2IP,country:'Russia'},
     phishingDomain,malwareFile,malwareHash,malwareFamily:hashFamily,
     c2IP,c2IP2,c2Domain,stagingDir:'C:\\ProgramData\\Intel\\',
+    // Fixed PIDs so process creation + network events can be correlated by PID
+    malwarePid:rand(2000,32000),
+    parentPid:rand(32001,65000),
   };
 }
 function tsOff(base,sec){return new Date(base.getTime()+sec*1000);}
@@ -543,20 +546,55 @@ function generateScenarioCoreLogs(ctx, timeRange){
     }
   });
 
-  // ── Endpoint network events ──
-  const epC2=(src,dstIp,t)=>JSON.stringify({
+  // ── Endpoint process + network events with correlated PIDs ──
+  // Each host gets a fixed PID for the malware process so the SOC agent can pivot:
+  //   Palo Alto (no PID) → endpoint network event (has PID) → process creation (same PID, full parent chain)
+  const victimPid=ctx.malwarePid;
+  const victimParentPid=ctx.parentPid;
+  const otherPids=otherHosts.map(()=>rand(2000,32000));
+
+  const epProcessCreate=(host,pid,parentPid,t)=>JSON.stringify({
+    '@timestamp':formatTimestamp(t),
+    event:{kind:'event',category:['process'],type:['start'],action:'process_creation'},
+    host:{name:host.name,hostname:host.name,ip:[host.ip],os:{name:'Windows 10',family:'windows'}},
+    user:{name:host.user,domain:'CONTOSO'},
+    process:{
+      name:ctx.malwareFile,pid,
+      executable:`C:\\ProgramData\\Intel\\${ctx.malwareFile}`,
+      command_line:`"C:\\ProgramData\\Intel\\${ctx.malwareFile}" -silent`,
+      hash:{sha256:ctx.malwareHash},
+      parent:{name:'powershell.exe',pid:parentPid,command_line:'powershell.exe -nop -w hidden -enc SQBFAFgA...'},
+    },
+    // Populated so agent can find this by querying process.hash.sha256 or process.name
+    related:{user:[host.user],hash:[ctx.malwareHash]},
+  });
+
+  const epC2=(host,pid,dstIp,t)=>JSON.stringify({
     '@timestamp':formatTimestamp(t),
     event:{kind:'event',category:['network'],type:['connection'],action:'network_flow'},
-    host:{name:src.name,hostname:src.name,ip:[src.ip]},
-    source:{ip:src.ip,port:randomHighPort()},
-    destination:{ip:dstIp,port:443,domain:ctx.c2Domain},
+    host:{name:host.name,hostname:host.name,ip:[host.ip]},
+    source:{ip:host.ip,port:randomHighPort()},
+    destination:{ip:dstIp,port:443,address:dstIp,domain:ctx.c2Domain},
     network:{transport:'tcp',direction:'outbound',bytes:rand(4096,65536)},
-    process:{name:src===victim?(ctx.malwareFile||'svchost.exe'):pick(['svchost.exe','msedge.exe','powershell.exe']),pid:rand(1000,65535)},
-    user:{name:src.user},
+    // Fixed PID — matches the process creation event above, enabling pivot
+    process:{name:ctx.malwareFile,pid,executable:`C:\\ProgramData\\Intel\\${ctx.malwareFile}`},
+    user:{name:host.user},
     threat:{enrichments:[{indicator:{ip:dstIp,domain:ctx.c2Domain,type:'domain-name',provider:'CISA'}}]},
+    related:{ip:[host.ip,dstIp],user:[host.user]},
   });
-  allSrcs.forEach(src=>logs.endpoint.push(epC2(src,ctx.c2IP,rndTs())));
-  logs.endpoint.push(epC2(victim,ctx.c2IP2,rndTs()));
+
+  // Victim: process creation first, then multiple outbound beacons with same PID
+  logs.endpoint.push(epProcessCreate(victim,victimPid,victimParentPid,new Date(from.getTime()+rand(0,Math.floor(span*0.1)))));
+  logs.endpoint.push(epC2(victim,victimPid,ctx.c2IP,rndTs()));
+  logs.endpoint.push(epC2(victim,victimPid,ctx.c2IP,rndTs()));
+  logs.endpoint.push(epC2(victim,victimPid,ctx.c2IP2,rndTs()));
+
+  // Other hosts: each gets its own process creation + network event pair
+  otherHosts.forEach((h,i)=>{
+    const pid=otherPids[i],parentPid=rand(32001,65000);
+    logs.endpoint.push(epProcessCreate(h,pid,parentPid,new Date(from.getTime()+rand(0,Math.floor(span*0.15)))));
+    logs.endpoint.push(epC2(h,pid,ctx.c2IP,rndTs()));
+  });
 
   // ── Windows DNS-Client/Operational Event 22 ──
   // Event ID 22 = DNS Query Response Completed — maps domain → IP in the log corpus
