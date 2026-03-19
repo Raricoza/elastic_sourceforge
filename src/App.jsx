@@ -1007,7 +1007,7 @@ const VENDOR_INGEST={
 
       // ── User / Group management ──
       const useradd=l.match(/(\S+)\s+useradd\[(\d+)\]:\s+new user:\s+name=([^,]+),\s*UID=(\d+),\s*GID=(\d+),\s*home=([^,]+),\s*shell=(\S+)/);
-      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{name:useradd[3],target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'},system:{auth:{useradd:{name:useradd[3],uid:useradd[4],gid:useradd[5],home:useradd[6],shell:useradd[7]},user:'root'}}};
+      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{name:useradd[3],id:useradd[4],target:{name:useradd[3]}},group:{id:useradd[5]},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'},system:{auth:{useradd:{name:useradd[3],uid:useradd[4],gid:useradd[5],home:useradd[6],shell:useradd[7]},user:'root'}}};
 
       const userdel=l.match(/(\S+)\s+userdel\[(\d+)\]:\s+delete user '([^']+)'/);
       if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{name:userdel[3],target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'},system:{auth:{useradd:{name:userdel[3]},user:'root'}}};
@@ -1022,7 +1022,7 @@ const VENDOR_INGEST={
       if(gpasswdRem) return{...base,host:{name:gpasswdRem[1],hostname:gpasswdRem[1]},process:{name:'gpasswd',pid:parseInt(gpasswdRem[2])},user:{name:gpasswdRem[4],target:{name:gpasswdRem[3]}},group:{name:gpasswdRem[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-removed-from-group',outcome:'success'},system:{auth:{groupadd:{name:gpasswdRem[5]},user:gpasswdRem[4]}}};
 
       const groupadd=l.match(/(\S+)\s+groupadd\[(\d+)\]:\s+new group:\s+name=([^,]+),\s*GID=(\d+)/);
-      if(groupadd) return{...base,host:{name:groupadd[1],hostname:groupadd[1]},process:{name:'groupadd',pid:parseInt(groupadd[2])},group:{name:groupadd[3]},event:{...base.event,category:['iam'],type:['group','creation'],action:'group-created',outcome:'success'},system:{auth:{groupadd:{name:groupadd[3],gid:groupadd[4]},user:'root'}}};
+      if(groupadd) return{...base,host:{name:groupadd[1],hostname:groupadd[1]},process:{name:'groupadd',pid:parseInt(groupadd[2])},group:{name:groupadd[3],id:groupadd[4]},event:{...base.event,category:['iam'],type:['group','creation'],action:'group-created',outcome:'success'},system:{auth:{groupadd:{name:groupadd[3],gid:groupadd[4]},user:'root'}}};
 
       const groupdel=l.match(/(\S+)\s+groupdel\[(\d+)\]:\s+removed group '([^']+)'/);
       if(groupdel) return{...base,host:{name:groupdel[1],hostname:groupdel[1]},process:{name:'groupdel',pid:parseInt(groupdel[2])},group:{name:groupdel[3]},event:{...base.event,category:['iam'],type:['group','deletion'],action:'group-deleted',outcome:'success'},system:{auth:{groupadd:{name:groupdel[3]},user:'root'}}};
