@@ -224,18 +224,61 @@ function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
 // ─── Linux Generator ──────────────────────────────────────────────────────────
 const LINUX_HOSTS=['web-prod-01','db-master-01','app-server-03','bastion-01','k8s-node-02','monitoring-01'];
 
+// Real public IPs from known scanning/attack regions — used for failed SSH logins
+// so Kibana's GeoIP enrichment populates the SSH Failed Login map
+const SSH_ATTACK_IPS=[
+  // China
+  '1.180.204.1','27.19.55.42','60.191.165.20','61.177.172.90','103.25.8.112',
+  '119.249.54.93','175.6.28.201','222.186.15.226','123.58.180.54','36.255.220.5',
+  // Russia
+  '5.63.13.12','31.131.21.106','82.202.204.60','185.220.101.1','194.165.16.72',
+  '91.108.4.200','185.234.218.45','194.28.172.120','37.228.129.3','195.54.160.149',
+  // Iran
+  '5.160.255.241','37.156.29.19','79.175.131.86','185.105.184.168','194.5.193.50',
+  '78.157.32.181','185.220.101.42','31.56.119.64','89.144.25.243','2.186.33.155',
+  // Brazil
+  '177.54.144.130','186.202.87.56','201.93.192.13','179.184.115.17','187.23.65.52',
+  // Vietnam
+  '103.76.228.155','103.241.248.64','14.224.163.79','113.161.88.43','116.110.9.213',
+  // Romania
+  '89.38.99.2','185.239.48.60','5.2.75.198','79.113.131.218','185.81.157.45',
+  // India
+  '103.15.28.200','49.248.170.36','117.201.14.225','103.249.29.14','202.137.155.68',
+  // Ukraine
+  '193.142.146.3','176.119.4.180','91.214.124.203','94.158.244.108','95.67.40.220',
+  // Indonesia
+  '114.79.130.66','180.248.66.78','36.91.88.161','180.251.35.66','101.255.119.52',
+  // Turkey
+  '95.172.66.108','77.92.68.165','88.247.163.129','46.196.28.60','78.188.93.34',
+  // Netherlands (Tor exits / VPS abuse)
+  '185.220.101.15','185.220.101.26','185.220.102.8','185.107.56.58','194.165.17.42',
+];
+
+const LINUX_TYPE_LOG_COUNT={
+  ssh:      {low:60, med:200,high:600},
+  sudo:     {low:25, med:80, high:250},
+  usermgmt: {low:15, med:60, high:200},
+  auditd:   {low:25, med:80, high:250},
+  cron:     {low:15, med:40, high:100},
+};
+const LINUX_TYPES_DEFAULT=['ssh','sudo','usermgmt','auditd','cron'];
+const LINUX_TYPE_LABELS={ssh:'SSH',sudo:'Sudo',usermgmt:'User Mgmt',auditd:'Auditd',cron:'Cron'};
+
 function genSSH(ts){
-  const host=randomLinuxHostname(),user=randomUser(),ip=randomIP(),port=rand(1024,65535),pid=rand(1000,65535);
+  const host=randomLinuxHostname(),user=randomUser(),port=rand(1024,65535),pid=rand(1000,65535);
+  // Successful logins use internal/RFC1918 IPs; failures use real external IPs for GeoIP map
+  const internalIP=randomIP();
+  const externalIP=pick(SSH_ATTACK_IPS);
   const r=Math.random();
-  // ~45% accepted, ~35% failed password, ~10% session open/close, ~10% misc
-  if(r<0.45) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','password','publickey'])} for ${user} from ${ip} port ${port} ssh2`;
-  if(r<0.60) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${ip} port ${port} ssh2`;
-  if(r<0.72) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test','oracle','pi','ubuntu'])} from ${ip} port ${port} ssh2`;
-  if(r<0.80) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session opened for user ${user} by (uid=${rand(0,1000)})`;
-  if(r<0.86) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session closed for user ${user}`;
-  if(r<0.91) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Disconnected from authenticating user ${user} ${ip} port ${port} [preauth]`;
-  if(r<0.95) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: error: maximum authentication attempts exceeded for ${user} from ${ip} port ${port} ssh2 [preauth]`;
-  return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Connection closed by ${ip} port ${port}`;
+  // ~40% accepted (internal), ~35% failed password (external), ~12% failed invalid user (external), ~13% misc
+  if(r<0.40) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','password','publickey'])} for ${user} from ${internalIP} port ${port} ssh2`;
+  if(r<0.55) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${externalIP} port ${port} ssh2`;
+  if(r<0.67) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test','oracle','pi','ubuntu','guest','deploy','ansible'])} from ${externalIP} port ${port} ssh2`;
+  if(r<0.75) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session opened for user ${user} by (uid=${rand(0,1000)})`;
+  if(r<0.81) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session closed for user ${user}`;
+  if(r<0.87) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Disconnected from authenticating user ${pick(['root','admin','test'])} ${externalIP} port ${port} [preauth]`;
+  if(r<0.93) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: error: maximum authentication attempts exceeded for ${pick(['root','admin'])} from ${externalIP} port ${port} ssh2 [preauth]`;
+  return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Connection closed by ${externalIP} port ${port}`;
 }
 
 function genSudo(ts){
@@ -280,7 +323,17 @@ function genUserMgmt(ts){
 
 function genAuditd(ts){const host=randomLinuxHostname(),epoch=(ts.getTime()/1000).toFixed(3),uid=rand(1000,65535),exe=pick(['/usr/bin/curl','/usr/bin/wget','/bin/bash','/usr/bin/python3','/usr/bin/nc']);return `${syslogTimestamp(ts)} ${host} audit[${rand(1,9999)}]: type=SYSCALL msg=audit(${epoch}:${rand(100,9999)}): arch=c000003e syscall=${rand(0,350)} success=${pick(['yes','no'])} pid=${rand(1,65535)} uid=${uid} exe="${exe}" key="${pick(['file_access','process_exec','network_connect','priv_escalation'])}"`;}
 function genCron(ts){return `${syslogTimestamp(ts)} ${randomLinuxHostname()} CRON[${rand(1000,65535)}]: (${pick(['root',randomUser()])}) CMD (${pick(['/usr/local/bin/backup.sh','/opt/scripts/cleanup.py','/usr/bin/logrotate /etc/logrotate.conf'])})`;}
-function generateLinuxLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.38?genSSH(ts):r<0.60?genSudo(ts):r<0.78?genUserMgmt(ts):r<0.90?genAuditd(ts):genCron(ts);});}
+function generateLinuxLogs(count,tr,types=LINUX_TYPES_DEFAULT){
+  const active=types.length?types:LINUX_TYPES_DEFAULT;
+  const W={ssh:38,sudo:22,usermgmt:18,auditd:12,cron:10};
+  const filtered=Object.entries(W).filter(([t])=>active.includes(t));
+  const total=filtered.reduce((s,[,w])=>s+w,0);
+  return generateTimestamps(count,tr).map(ts=>{
+    let r=Math.random()*total,cum=0;
+    for(const [t,w] of filtered){cum+=w;if(r<cum)return t==='ssh'?genSSH(ts):t==='sudo'?genSudo(ts):t==='usermgmt'?genUserMgmt(ts):t==='auditd'?genAuditd(ts):genCron(ts);}
+    return genCron(ts);
+  });
+}
 
 // ─── APT29 / NOBELIUM Verified IOCs ──────────────────────────────────────────
 // Sources: CISA AA20-352A, AA21-148A, AA22-074A, AA23-347A; Mandiant/FireEye UNC2452;
@@ -1034,7 +1087,7 @@ function ConfigDialog({open,onClose,onSave}){
 
 // Vendor Card
 const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
-function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
@@ -1115,6 +1168,30 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
                       <span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>
                       {label}
                       {isOptional&&<span style={{fontSize:'8px',opacity:0.7,marginLeft:'1px'}}>opt</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='linux'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(LINUX_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(linuxLogTypes||LINUX_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{
+                    e.stopPropagation();
+                    const cur=linuxLogTypes||LINUX_TYPES_DEFAULT;
+                    const next=checked?cur.filter(x=>x!==t):[...cur,t];
+                    if(next.length>0)onLinuxLogTypes(next);
+                  };
+                  return(
+                    <button key={t} type="button" onClick={toggle}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none"
+                      style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}>
+                      <span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>
+                      {label}
                     </button>
                   );
                 })}
@@ -1449,6 +1526,7 @@ export default function App(){
   const [pushing,setPushing]=useState(false);
   const [emailDomain,setEmailDomain]=useState('');
   const [windowsLogTypes,setWindowsLogTypes]=useState(WIN_TYPES_DEFAULT);
+  const [linuxLogTypes,setLinuxLogTypes]=useState(LINUX_TYPES_DEFAULT);
   const [vendorHostnamePrefix,setVendorHostnamePrefix]=useState({windows:'',linux:'',endpoint:''});
   const [vendorHostnameCap,setVendorHostnameCap]=useState({windows:null,linux:null,endpoint:null});
   const [vendorIncludeAdmin,setVendorIncludeAdmin]=useState({endpoint:false,windows:false,linux:false});
@@ -1474,6 +1552,12 @@ export default function App(){
         setVendorMinLogs(p=>({...p,windows:Math.max(1,sum)}));
         return types;
       });
+    } else if(id==='linux'){
+      setLinuxLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(LINUX_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,linux:Math.max(1,sum)}));
+        return types;
+      });
     } else {
       const def=VENDOR_LOG_COUNT[id]?.[lvl];
       if(def)setVendorMinLogs(p=>({...p,[id]:def}));
@@ -1485,6 +1569,15 @@ export default function App(){
       const lvl=prev.windows||'med';
       const sum=types.reduce((s,t)=>s+(WIN_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
       setVendorMinLogs(p=>({...p,windows:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleLinuxLogTypes=useCallback((types)=>{
+    setLinuxLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.linux||'med';
+      const sum=types.reduce((s,t)=>s+(LINUX_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,linux:Math.max(1,sum)}));
       return prev;
     });
   },[]);
@@ -1525,14 +1618,14 @@ export default function App(){
         setPool(poolSize,prefix);
         _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
         _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
-        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
+        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
       });
       _emailDomain=null;
       _hostnamePrefix=null;
       _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes]);
+  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
@@ -1606,7 +1699,7 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
