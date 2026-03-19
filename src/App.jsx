@@ -420,7 +420,7 @@ function generateAPT29Scenario(){
     makeAlert(t(3300),{ruleName:'Outbound C2 Beacon to Known APT29 Infrastructure',severity:'critical',riskScore:97,tactic:'Command and Control',technique:'T1071.001',techniqueName:'Web Protocols',host:v1,user:u1,net:{ip:ctx.c2IP,port:443},extra:{url:{domain:ctx.c2Domain,scheme:'https'},network:{bytes:rand(4096,32768)},threat:{indicator:{ip:ctx.c2IP,domain:ctx.c2Domain,type:'domain-name'}}}}),
     makeAlert(t(3600),{ruleName:'Large Data Exfiltration over Encrypted C2 Channel',severity:'critical',riskScore:95,tactic:'Exfiltration',technique:'T1041',techniqueName:'Exfiltration Over C2 Channel',host:v1,user:u1,net:{ip:ctx.c2IP2,port:443},extra:{url:{domain:ctx.c2Domain},network:{bytes:rand(52428800,209715200)},threat:{indicator:{ip:ctx.c2IP2,type:'ipv4-addr'}}}}),
   ];
-  return{meta:{name:'APT29 — Midnight Blizzard',attackerProfile:'Russia-nexus state-sponsored (SVR)',targetOrg:'Enterprise',description:`Full kill-chain APT intrusion: OAuth phishing → ${ctx.malwareFamily} malware (hash: ${ctx.malwareHash.slice(0,16)}…) → persistence → UAC bypass → WMI subscription → credential dump → lateral movement → C2 (${ctx.c2Domain}) → exfiltration. 15 correlated alerts across 11 MITRE tactics.`},ctx,alerts};
+  return{meta:{name:'APT29 — Midnight Blizzard',attackerProfile:'Russia-nexus state-sponsored (SVR)',targetOrg:'Enterprise',description:`Full kill-chain APT intrusion: OAuth phishing → ${ctx.malwareFamily} malware (hash: ${ctx.malwareHash.slice(0,16)}…) → persistence → UAC bypass → WMI subscription → credential dump → lateral movement → C2 (${ctx.c2Domain}) → exfiltration. 15 correlated alerts across 11 MITRE tactics.`,timeRange:{from:t(0),to:t(3600)}},ctx,alerts};
 }
 
 function generateLotLScenario(){
@@ -441,7 +441,7 @@ function generateLotLScenario(){
     makeAlert(t(1500),{ruleName:'Data Archive Created Using Built-in Compression',severity:'high',riskScore:67,tactic:'Collection',technique:'T1560.001',techniqueName:'Archive via Utility',host:v1,user:u1,proc:{name:'powershell.exe',cmd:`Compress-Archive -Path "${ctx.stagingDir}*" -DestinationPath C:\\Windows\\Temp\\logs_backup.zip -Force`,parent:'wscript.exe'}}),
     makeAlert(t(1800),{ruleName:'Anomalous HTTPS Transfer to Non-Corporate IP',severity:'critical',riskScore:91,tactic:'Exfiltration',technique:'T1048.003',techniqueName:'Exfiltration Over Unencrypted Protocol',host:v1,user:u1,net:{ip:ctx.c2IP,port:443},extra:{network:{bytes:rand(10485760,78643200)},url:{domain:ctx.c2Domain}}}),
   ];
-  return{meta:{name:'APT — Living off the Land',attackerProfile:'Sophisticated threat actor (no custom malware)',targetOrg:'Enterprise',description:'Fileless intrusion using only Windows built-in utilities: certutil → mshta → schtasks → log clearing → token privilege abuse → NTDS dump → WMI lateral movement → data exfiltration. No malware dropped.'},ctx,alerts};
+  return{meta:{name:'APT — Living off the Land',attackerProfile:'Sophisticated threat actor (no custom malware)',targetOrg:'Enterprise',description:'Fileless intrusion using only Windows built-in utilities: certutil → mshta → schtasks → log clearing → token privilege abuse → NTDS dump → WMI lateral movement → data exfiltration. No malware dropped.',timeRange:{from:t(0),to:t(1800)}},ctx,alerts};
 }
 
 function generateScenarioNoise(level,tr=120){
@@ -458,6 +458,114 @@ function generateScenarioNoise(level,tr=120){
   return noise;
 }
 
+// Generates firewall + endpoint logs that directly corroborate the attack scenario.
+// Uses real IOCs from ctx so SOC investigation searches find them.
+// Also includes 2 additional internal hosts connecting to the same C2 — surfaces
+// lateral reach and gives the automated workflow multiple endpoints to investigate.
+function generateScenarioCoreLogs(ctx, timeRange){
+  const from=timeRange?.from||new Date(Date.now()-4*3600000);
+  const to=timeRange?.to||new Date();
+  const span=Math.max(to-from,60000);
+  const rndTs=()=>new Date(from.getTime()+Math.random()*span);
+
+  // 2 other internal hosts that also communicated with the C2
+  const otherHosts=[
+    {ip:`192.168.${rand(10,15)}.${rand(20,80)}`,name:_HOSTNAMES_BASE(),user:pick(_USERS_LIST)},
+    {ip:`192.168.${rand(16,20)}.${rand(20,80)}`,name:_HOSTNAMES_BASE(),user:pick(_USERS_LIST)},
+  ];
+  const victim={ip:ctx.victim.ip,name:ctx.victim.hostname,user:ctx.victim.user};
+  const allSrcs=[victim,...otherHosts];
+  const logs={paloalto:[],fortinet:[],endpoint:[],windows:[]};
+
+  // ── Palo Alto ──
+  const panC2Traffic=(src,dstIp,t,bytes)=>{
+    const dev=pick(PAN_DEVICES),pt=panTs(t);
+    const st=new Date(t.getTime()-rand(30000,300000)),pst=panTs(st);
+    const b=bytes||rand(4096,65536),bs=Math.floor(b*0.3),br=b-bs,pk=rand(10,500);
+    return `<14>${syslogTimestamp(t)} ${dev} 1,${pt},${PAN_SERIAL},TRAFFIC,end,0,${pt},${src.ip},${dstIp},0.0.0.0,0.0.0.0,allow-internet,${src.user},,ssl,vsys1,trust,untrust,ethernet1/1,ethernet1/2,default,0,${rand(1,65535)},1,${randomHighPort()},443,0,0,0x400000,tcp,allow,${b},${bs},${br},${pk},${pst},${Math.floor((t-st)/1000)},any,0,${rand(1000000,9999999)},0x0,192.168.0.0-192.168.255.255,Russia,0,${Math.floor(pk*0.4)},${pk-Math.floor(pk*0.4)},tcp-fin,0,0,0,0,vsys1,${dev},from-policy`;
+  };
+  const panC2Threat=(src,dstIp,t)=>{
+    const dev=pick(PAN_DEVICES),pt=panTs(t);
+    return `<11>${syslogTimestamp(t)} ${dev} 1,${pt},${PAN_SERIAL},THREAT,spyware,0,${pt},${src.ip},${dstIp},0.0.0.0,0.0.0.0,Block-Critical,,${src.user},ssl,vsys1,trust,untrust,ethernet1/1,ethernet1/2,default,0,${rand(1,65535)},1,${randomHighPort()},443,0,0,0x0,tcp,alert,"Generic C2 HTTPS Traffic(12345)",12345,command-and-control,high,client-to-server,${rand(1000000,9999999)},0x0,192.168.0.0-192.168.255.255,Russia`;
+  };
+  // Victim: multiple C2 beacons + large exfil burst
+  for(let i=0;i<8;i++){
+    const t=rndTs(),dst=i%3===0?ctx.c2IP2:ctx.c2IP;
+    const bytes=i===7?rand(52428800,104857600):undefined;
+    logs.paloalto.push(i%4===0?panC2Threat(victim,dst,t):panC2Traffic(victim,dst,t,bytes));
+  }
+  // Other hosts → same C2 (shows blast radius)
+  otherHosts.forEach(h=>logs.paloalto.push(panC2Traffic(h,ctx.c2IP,rndTs())));
+
+  // ── Fortinet ──
+  const fortiC2Traffic=(src,dstIp,t)=>{
+    const hn=`FGT-${pick(['DC','EDGE','CORE'])}-${rand(1,5)}`,b=rand(4096,524288);
+    return `date=${t.toISOString().split('T')[0]} time=${t.toTimeString().split(' ')[0]} devname="${hn}" eventtime=${Math.floor(t/1000)} logid="000001${rand(1000,9999)}" type="traffic" subtype="forward" level="notice" srcip=${src.ip} srcport=${randomHighPort()} dstip=${dstIp} dstport=443 action="accept" policyname="allow-outbound" service="HTTPS" sentbyte=${Math.floor(b*0.3)} rcvdbyte=${b-Math.floor(b*0.3)} hostname="${ctx.c2Domain}" dstcountry="Russia" app="ssl" user="${src.user}"`;
+  };
+  const fortiC2Alert=(src,dstIp,t)=>{
+    const hn=`FGT-${pick(['DC','EDGE'])}-${rand(1,3)}`;
+    return `date=${t.toISOString().split('T')[0]} time=${t.toTimeString().split(' ')[0]} devname="${hn}" eventtime=${Math.floor(t/1000)} logid="042${rand(10000,99999)}" type="utm" subtype="app-ctrl" level="alert" srcip=${src.ip} dstip=${dstIp} action="detected" hostname="${ctx.c2Domain}" attack="C2.Beacon.APT29" severity="critical" msg="Known APT29 C2 domain contact detected" user="${src.user}"`;
+  };
+  allSrcs.forEach((src,i)=>{
+    logs.fortinet.push(i===0?fortiC2Alert(src,ctx.c2IP,rndTs()):fortiC2Traffic(src,ctx.c2IP,rndTs()));
+    if(i===0){
+      logs.fortinet.push(fortiC2Traffic(src,ctx.c2IP,rndTs()));
+      logs.fortinet.push(fortiC2Traffic(src,ctx.c2IP2,rndTs()));
+    }
+  });
+
+  // ── Endpoint network events ──
+  const epC2=(src,dstIp,t)=>JSON.stringify({
+    '@timestamp':formatTimestamp(t),
+    event:{kind:'event',category:['network'],type:['connection'],action:'network_flow'},
+    host:{name:src.name,hostname:src.name,ip:[src.ip]},
+    source:{ip:src.ip,port:randomHighPort()},
+    destination:{ip:dstIp,port:443,domain:ctx.c2Domain},
+    network:{transport:'tcp',direction:'outbound',bytes:rand(4096,65536)},
+    process:{name:src===victim?(ctx.malwareFile||'svchost.exe'):pick(['svchost.exe','msedge.exe','powershell.exe']),pid:rand(1000,65535)},
+    user:{name:src.user},
+    threat:{enrichments:[{indicator:{ip:dstIp,domain:ctx.c2Domain,type:'domain-name',provider:'CISA'}}]},
+  });
+  allSrcs.forEach(src=>logs.endpoint.push(epC2(src,ctx.c2IP,rndTs())));
+  logs.endpoint.push(epC2(victim,ctx.c2IP2,rndTs()));
+
+  // ── Windows DNS-Client/Operational Event 22 ──
+  // Event ID 22 = DNS Query Response Completed — maps domain → IP in the log corpus
+  // so the SOC agent can resolve C2 domains without relying on external DNS tools.
+  const dnsQueryLog=(host,domain,resolvedIp,t)=>JSON.stringify({
+    '@timestamp':formatTimestamp(t),
+    winlog:{
+      event_id:22,
+      channel:'Microsoft-Windows-DNS-Client/Operational',
+      computer_name:`${host.name}.contoso.com`,
+      provider_name:'Microsoft-Windows-DNS-Client',
+      record_id:rand(10000,9999999),
+      event_data:{QueryName:domain,QueryResults:`type:  1 ${resolvedIp};`,QueryOptions:'1073774080'},
+    },
+    event:{code:'22',action:'dns-query-response',category:['network'],type:['info'],kind:'event',outcome:'success'},
+    host:{name:host.name,hostname:host.name,ip:[host.ip]},
+    // ECS dns fields — directly queryable by the agent
+    dns:{
+      question:{name:domain,type:'A',registered_domain:domain.split('.').slice(-2).join('.')},
+      answers:[{name:domain,data:resolvedIp,type:'A',ttl:300}],
+      resolved_ip:[resolvedIp],
+      response_code:'NOERROR',
+    },
+    // Also populate destination so firewall-style queries match
+    destination:{ip:resolvedIp,address:resolvedIp},
+    related:{hosts:[domain],ip:[resolvedIp,host.ip]},
+    user:{name:host.user},
+  });
+
+  // Victim resolves both C2 domain and phishing domain
+  logs.windows.push(dnsQueryLog(victim,ctx.c2Domain,ctx.c2IP,rndTs()));
+  logs.windows.push(dnsQueryLog(victim,ctx.phishingDomain,ctx.attacker?.ip||ctx.c2IP,rndTs()));
+  // Other compromised hosts also resolve the same C2 domain (corroborates lateral reach)
+  otherHosts.forEach(h=>logs.windows.push(dnsQueryLog(h,ctx.c2Domain,ctx.c2IP,rndTs())));
+
+  return logs;
+}
+
 // ─── Elastic Config ───────────────────────────────────────────────────────────
 const STORAGE_KEY='elastic_config_forge';
 function loadConfig(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');}catch{return null;}}
@@ -468,14 +576,46 @@ function buildHeaders(cfg){return {'Content-Type':'application/x-ndjson','Author
 function agentField(type){return{type,version:'8.13.0',ephemeral_id:Math.random().toString(36).slice(2)};}
 function dsField(dataset){return{type:'logs',dataset,namespace:'default'};}
 const VENDOR_INGEST={
-  fortinet:{getIndex(l){if(l.includes('type="utm"'))return'logs-fortinet.fortigate.utm-default';if(l.includes('subtype="vpn"'))return'logs-fortinet.fortigate.event-default';return'logs-fortinet.fortigate.traffic-default';},toDoc(l){const ds=l.includes('type="utm"')?'fortinet.fortigate.utm':l.includes('subtype="vpn"')?'fortinet.fortigate.event':'fortinet.fortigate.traffic';const et=l.match(/eventtime=(\d+)/);const ts=et?new Date(parseInt(et[1])*1000).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:ds,module:'fortinet',original:l},observer:{vendor:'Fortinet',product:'FortiGate',type:'firewall'},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
+  fortinet:{getIndex(l){if(l.includes('type="utm"'))return'logs-fortinet.fortigate.utm-default';if(l.includes('subtype="vpn"'))return'logs-fortinet.fortigate.event-default';return'logs-fortinet.fortigate.traffic-default';},toDoc(l){
+    const ds=l.includes('type="utm"')?'fortinet.fortigate.utm':l.includes('subtype="vpn"')?'fortinet.fortigate.event':'fortinet.fortigate.traffic';
+    const et=l.match(/eventtime=(\d+)/);
+    const ts=et?new Date(parseInt(et[1])*1000).toISOString():new Date().toISOString();
+    // Parse all key=value pairs (quoted and unquoted) into a flat map
+    const kv={};
+    l.replace(/(\w+)="([^"]*)"/g,(_,k,v)=>{kv[k]=v;});
+    l.replace(/(?:^|\s)(\w+)=([^\s"]+)/g,(_,k,v)=>{if(!kv[k])kv[k]=v;});
+    const srcIp=kv.srcip,dstIp=kv.dstip,hostname=kv.hostname;
+    return{
+      '@timestamp':ts,message:l,
+      event:{dataset:ds,module:'fortinet',kind:'event',action:kv.action,outcome:kv.action==='accept'||kv.action==='allow'?'success':'failure',original:l},
+      observer:{vendor:'Fortinet',product:'FortiGate',type:'firewall'},
+      ...(srcIp?{source:{ip:srcIp,address:srcIp,...(kv.srcport?{port:parseInt(kv.srcport)}:{})}}:{}),
+      ...(dstIp?{destination:{ip:dstIp,address:hostname||dstIp,...(kv.dstport?{port:parseInt(kv.dstport)}:{}),...(hostname?{domain:hostname}:{}),...(kv.dstcountry?{geo:{country_name:kv.dstcountry}}:{})}}:{}),
+      ...(kv.user?{user:{name:kv.user}}:{}),
+      network:{transport:'tcp',...(kv.app?{application:kv.app}:{})},
+      agent:agentField('filebeat'),data_stream:dsField(ds),
+    };
+  }},
   paloalto:{getIndex(){return'logs-panw.panos-5.5.0';},toDoc(l){
     const cols=l.split(',');
-    // New format: cols[0]=syslog_hdr+FUTURE_USE, cols[1]=recv_time (YYYY/MM/DD HH:MM:SS), cols[3]=type
+    // cols[0]=syslog_hdr+FUTURE_USE(1), cols[1]=recv_time, cols[2]=serial, cols[3]=type
+    // cols[7]=src_ip, cols[8]=dst_ip, cols[12]=src_user, cols[24]=src_port, cols[25]=dst_port
     const lt=cols[3]||'TRAFFIC';
     let ts=new Date().toISOString();
     if(cols[1]){const m=cols[1].trim().match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);if(m)ts=new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`).toISOString();}
-    return{'@timestamp':ts,message:l,event:{dataset:'panw.panos',module:'panw',kind:lt==='THREAT'?'alert':'event',original:l},observer:{vendor:'Palo Alto Networks',product:'PAN-OS',type:'firewall'},agent:agentField('filebeat'),data_stream:dsField('panw.panos')};
+    const srcIp=cols[7]?.trim(),dstIp=cols[8]?.trim();
+    const srcPort=cols[24]?parseInt(cols[24]):undefined,dstPort=cols[25]?parseInt(cols[25]):undefined;
+    const srcUser=(cols[12]?.trim()||'').replace(/^,+|,+$/g,'')||undefined;
+    return{
+      '@timestamp':ts,message:l,
+      event:{dataset:'panw.panos',module:'panw',kind:lt==='THREAT'?'alert':'event',original:l},
+      observer:{vendor:'Palo Alto Networks',product:'PAN-OS',type:'firewall'},
+      ...(srcIp&&srcIp!=='0.0.0.0'?{source:{ip:srcIp,address:srcIp,...(srcPort?{port:srcPort}:{})}}:{}),
+      ...(dstIp&&dstIp!=='0.0.0.0'?{destination:{ip:dstIp,address:dstIp,...(dstPort?{port:dstPort}:{})}}:{}),
+      ...(srcUser?{user:{name:srcUser}}:{}),
+      network:{transport:cols[29]?.trim()||'tcp'},
+      agent:agentField('filebeat'),data_stream:dsField('panw.panos'),
+    };
   }},
   switch:{getIndex(){return'logs-cisco.ios-default';},toDoc(l){const tm=l.match(/>(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);const ts=tm?new Date(tm[1]+' '+new Date().getFullYear()).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:'cisco.ios',module:'cisco',kind:'event',original:l},observer:{vendor:'Cisco',product:'Catalyst IOS',type:'switch'},agent:agentField('filebeat'),data_stream:dsField('cisco.ios')};}},
   email:{getIndex(l){if(l.trimStart().startsWith('{'))return'logs-o365.audit-default';if(l.includes('postfix/')||l.includes('NOQUEUE'))return'logs-system.syslog-default';return'logs-microsoft_exchange_server.log-default';},toDoc(l){let ds='microsoft_exchange_server.log',ts=new Date().toISOString();if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);ds='o365.audit';ts=o.CreationTime||ts;}catch{}}else if(l.includes('postfix/')){ds='system.syslog';}return{'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
@@ -754,7 +894,17 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
         bulkLines.push(JSON.stringify({create:{_index:'.alerts-security.alerts-default'}}));
         bulkLines.push(JSON.stringify(a));
       });
-      // 2. Noise → vendor indices
+      // 2. Scenario-correlated logs (real IOCs — firewall + endpoint)
+      const coreLogs=generateScenarioCoreLogs(ctx,meta.timeRange);
+      Object.entries(coreLogs).forEach(([vid,rawLogs])=>{
+        const ing=VENDOR_INGEST[vid];if(!ing)return;
+        rawLogs.forEach(raw=>{
+          bulkLines.push(JSON.stringify({create:{_index:ing.getIndex(raw)}}));
+          bulkLines.push(JSON.stringify(ing.toDoc(raw)));
+        });
+      });
+      const coreCount=Object.values(coreLogs).reduce((s,l)=>s+l.length,0);
+      // 3. Background noise → vendor indices
       const noise=generateScenarioNoise(noiseLevel);
       Object.entries(noise).forEach(([vid,rawLogs])=>{
         const ing=VENDOR_INGEST[vid];if(!ing)return;
@@ -768,7 +918,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
       if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       const d=await res.json();
       const errs=d.items?.filter(i=>i.create?.error||i.index?.error)||[];
-      setPushResult({alerts:alerts.length,noise:noiseCount,errors:errs.length,firstError:errs[0]?.create?.error?.reason||errs[0]?.index?.error?.reason});
+      setPushResult({alerts:alerts.length,core:coreCount,noise:noiseCount,errors:errs.length,firstError:errs[0]?.create?.error?.reason||errs[0]?.index?.error?.reason});
     }catch(e){setPushResult({error:e.message});}
     finally{setPushing(false);}
   };
@@ -776,10 +926,13 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
   const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  -H "Authorization: ApiKey ${elasticConfig.apiKey}" \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @apt-alerts.ndjson`:'';
 
   const dl=()=>{
+    const coreLogs=generateScenarioCoreLogs(ctx,meta.timeRange);
     const noise=generateScenarioNoise(noiseLevel);
+    const vendorLines=logs=>Object.entries(logs).flatMap(([vid,rawLogs])=>{const ing=VENDOR_INGEST[vid];if(!ing)return[];return rawLogs.map(raw=>`${JSON.stringify({create:{_index:ing.getIndex(raw)}})}\n${JSON.stringify(ing.toDoc(raw))}`);});
     const lines=[
       ...alerts.map(a=>`${JSON.stringify({create:{_index:'.alerts-security.alerts-default'}})}\n${JSON.stringify(a)}`),
-      ...Object.entries(noise).flatMap(([vid,rawLogs])=>{const ing=VENDOR_INGEST[vid];if(!ing)return[];return rawLogs.map(raw=>`${JSON.stringify({create:{_index:ing.getIndex(raw)}})}\n${JSON.stringify(ing.toDoc(raw))}`);})
+      ...vendorLines(coreLogs),
+      ...vendorLines(noise),
     ];
     const b=new Blob([lines.join('\n')+'\n'],{type:'application/x-ndjson'});
     const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`${scenario.id}-alerts.ndjson`;a.click();URL.revokeObjectURL(u);
@@ -844,7 +997,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
         {showCurl&&curl&&<pre className="bg-gray-950 rounded-lg p-3 text-xs font-mono text-gray-300 whitespace-pre-wrap">{curl}</pre>}
         {pushResult&&!pushResult.error&&(
           <div className={cn('flex items-center gap-2 p-2 rounded-lg text-xs',pushResult.errors>0?'bg-amber-500/10 border border-amber-500/30 text-amber-300':'bg-green-500/10 border border-green-500/30 text-green-400')}>
-            {pushResult.errors>0?'⚠':'✓'} Pushed {pushResult.alerts} attack alerts + {pushResult.noise} noise logs{pushResult.errors>0?` — ${pushResult.errors} errors: ${pushResult.firstError}`:''}
+            {pushResult.errors>0?'⚠':'✓'} Pushed {pushResult.alerts} attack alerts + {pushResult.core} correlated logs + {pushResult.noise} noise logs{pushResult.errors>0?` — ${pushResult.errors} errors: ${pushResult.firstError}`:''}
           </div>
         )}
         {pushResult?.error&&<div className="flex items-center gap-2 p-2 rounded-lg text-xs bg-red-500/10 border border-red-500/30 text-red-400">✗ {pushResult.error}</div>}
