@@ -225,34 +225,93 @@ function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
 const LINUX_HOSTS=['web-prod-01','db-master-01','app-server-03','bastion-01','k8s-node-02','monitoring-01'];
 
 // Real public IPs from known scanning/attack regions — used for failed SSH logins
-// so Kibana's GeoIP enrichment populates the SSH Failed Login map
-const SSH_ATTACK_IPS=[
+// Format: [country_iso_code, country_name, city_name, continent_name, lat, lon]
+const SSH_ATTACK_GEO={
   // China
-  '1.180.204.1','27.19.55.42','60.191.165.20','61.177.172.90','103.25.8.112',
-  '119.249.54.93','175.6.28.201','222.186.15.226','123.58.180.54','36.255.220.5',
+  '1.180.204.1':    ['CN','China','Beijing','Asia',39.9042,116.4074],
+  '27.19.55.42':    ['CN','China','Wuhan','Asia',30.5928,114.3055],
+  '60.191.165.20':  ['CN','China','Hangzhou','Asia',30.2741,120.1551],
+  '61.177.172.90':  ['CN','China','Suzhou','Asia',31.2989,120.5853],
+  '103.25.8.112':   ['CN','China','Shanghai','Asia',31.2304,121.4737],
+  '119.249.54.93':  ['CN','China','Guangzhou','Asia',23.1291,113.2644],
+  '175.6.28.201':   ['CN','China','Chengdu','Asia',30.5723,104.0665],
+  '222.186.15.226': ['CN','China','Nanjing','Asia',32.0603,118.7969],
+  '123.58.180.54':  ['CN','China','Shenzhen','Asia',22.5431,114.0579],
+  '36.255.220.5':   ['CN','China','Tianjin','Asia',39.3434,117.3616],
   // Russia
-  '5.63.13.12','31.131.21.106','82.202.204.60','185.220.101.1','194.165.16.72',
-  '91.108.4.200','185.234.218.45','194.28.172.120','37.228.129.3','195.54.160.149',
+  '5.63.13.12':     ['RU','Russia','Moscow','Europe',55.7558,37.6173],
+  '31.131.21.106':  ['RU','Russia','Saint Petersburg','Europe',59.9311,30.3609],
+  '82.202.204.60':  ['RU','Russia','Novosibirsk','Asia',54.9833,82.8964],
+  '185.220.101.1':  ['RU','Russia','Yekaterinburg','Asia',56.8389,60.6057],
+  '194.165.16.72':  ['RU','Russia','Kazan','Europe',55.7879,49.1233],
+  '91.108.4.200':   ['RU','Russia','Samara','Europe',53.2001,50.1500],
+  '185.234.218.45': ['RU','Russia','Rostov-on-Don','Europe',47.2357,39.7015],
+  '194.28.172.120': ['RU','Russia','Krasnodar','Europe',45.0355,38.9753],
+  '37.228.129.3':   ['RU','Russia','Chelyabinsk','Asia',55.1644,61.4368],
+  '195.54.160.149': ['RU','Russia','Omsk','Asia',54.9885,73.3242],
   // Iran
-  '5.160.255.241','37.156.29.19','79.175.131.86','185.105.184.168','194.5.193.50',
-  '78.157.32.181','185.220.101.42','31.56.119.64','89.144.25.243','2.186.33.155',
+  '5.160.255.241':  ['IR','Iran','Tehran','Asia',35.6892,51.3890],
+  '37.156.29.19':   ['IR','Iran','Mashhad','Asia',36.2605,59.6168],
+  '79.175.131.86':  ['IR','Iran','Isfahan','Asia',32.6546,51.6680],
+  '185.105.184.168':['IR','Iran','Tabriz','Asia',38.0962,46.2738],
+  '194.5.193.50':   ['IR','Iran','Shiraz','Asia',29.5918,52.5837],
+  '78.157.32.181':  ['IR','Iran','Ahvaz','Asia',31.3183,48.6706],
+  '185.220.101.42': ['IR','Iran','Qom','Asia',34.6399,50.8760],
+  '31.56.119.64':   ['IR','Iran','Kermanshah','Asia',34.3277,47.0778],
+  '89.144.25.243':  ['IR','Iran','Rasht','Asia',37.2808,49.5832],
+  '2.186.33.155':   ['IR','Iran','Zahedan','Asia',29.4963,60.8629],
   // Brazil
-  '177.54.144.130','186.202.87.56','201.93.192.13','179.184.115.17','187.23.65.52',
+  '177.54.144.130': ['BR','Brazil','São Paulo','South America',-23.5505,-46.6333],
+  '186.202.87.56':  ['BR','Brazil','Rio de Janeiro','South America',-22.9068,-43.1729],
+  '201.93.192.13':  ['BR','Brazil','Belo Horizonte','South America',-19.9167,-43.9345],
+  '179.184.115.17': ['BR','Brazil','Fortaleza','South America',-3.7172,-38.5434],
+  '187.23.65.52':   ['BR','Brazil','Curitiba','South America',-25.4296,-49.2719],
   // Vietnam
-  '103.76.228.155','103.241.248.64','14.224.163.79','113.161.88.43','116.110.9.213',
+  '103.76.228.155': ['VN','Vietnam','Ho Chi Minh City','Asia',10.8231,106.6297],
+  '103.241.248.64': ['VN','Vietnam','Hanoi','Asia',21.0278,105.8342],
+  '14.224.163.79':  ['VN','Vietnam','Da Nang','Asia',16.0544,108.2022],
+  '113.161.88.43':  ['VN','Vietnam','Hai Phong','Asia',20.8449,106.6881],
+  '116.110.9.213':  ['VN','Vietnam','Can Tho','Asia',10.0341,105.7852],
   // Romania
-  '89.38.99.2','185.239.48.60','5.2.75.198','79.113.131.218','185.81.157.45',
+  '89.38.99.2':     ['RO','Romania','Bucharest','Europe',44.4268,26.1025],
+  '185.239.48.60':  ['RO','Romania','Cluj-Napoca','Europe',46.7712,23.6236],
+  '5.2.75.198':     ['RO','Romania','Timișoara','Europe',45.7489,21.2087],
+  '79.113.131.218': ['RO','Romania','Iași','Europe',47.1585,27.6014],
+  '185.81.157.45':  ['RO','Romania','Constanța','Europe',44.1733,28.6383],
   // India
-  '103.15.28.200','49.248.170.36','117.201.14.225','103.249.29.14','202.137.155.68',
+  '103.15.28.200':  ['IN','India','Mumbai','Asia',19.0760,72.8777],
+  '49.248.170.36':  ['IN','India','New Delhi','Asia',28.7041,77.1025],
+  '117.201.14.225': ['IN','India','Bengaluru','Asia',12.9716,77.5946],
+  '103.249.29.14':  ['IN','India','Hyderabad','Asia',17.3850,78.4867],
+  '202.137.155.68': ['IN','India','Chennai','Asia',13.0827,80.2707],
   // Ukraine
-  '193.142.146.3','176.119.4.180','91.214.124.203','94.158.244.108','95.67.40.220',
+  '193.142.146.3':  ['UA','Ukraine','Kyiv','Europe',50.4501,30.5234],
+  '176.119.4.180':  ['UA','Ukraine','Kharkiv','Europe',49.9935,36.2304],
+  '91.214.124.203': ['UA','Ukraine','Odessa','Europe',46.4825,30.7233],
+  '94.158.244.108': ['UA','Ukraine','Dnipro','Europe',48.4647,35.0462],
+  '95.67.40.220':   ['UA','Ukraine','Zaporizhzhia','Europe',47.8388,35.1396],
   // Indonesia
-  '114.79.130.66','180.248.66.78','36.91.88.161','180.251.35.66','101.255.119.52',
+  '114.79.130.66':  ['ID','Indonesia','Jakarta','Asia',-6.2088,106.8456],
+  '180.248.66.78':  ['ID','Indonesia','Surabaya','Asia',-7.2575,112.7521],
+  '36.91.88.161':   ['ID','Indonesia','Bandung','Asia',-6.9175,107.6191],
+  '180.251.35.66':  ['ID','Indonesia','Medan','Asia',3.5952,98.6722],
+  '101.255.119.52': ['ID','Indonesia','Semarang','Asia',-6.9932,110.4203],
   // Turkey
-  '95.172.66.108','77.92.68.165','88.247.163.129','46.196.28.60','78.188.93.34',
-  // Netherlands (Tor exits / VPS abuse)
-  '185.220.101.15','185.220.101.26','185.220.102.8','185.107.56.58','194.165.17.42',
-];
+  '95.172.66.108':  ['TR','Turkey','Istanbul','Europe',41.0082,28.9784],
+  '77.92.68.165':   ['TR','Turkey','Ankara','Asia',39.9334,32.8597],
+  '88.247.163.129': ['TR','Turkey','Izmir','Europe',38.4237,27.1428],
+  '46.196.28.60':   ['TR','Turkey','Bursa','Europe',40.1885,29.0610],
+  '78.188.93.34':   ['TR','Turkey','Adana','Asia',37.0000,35.3213],
+  // Netherlands (Tor exit nodes / VPS abuse)
+  '185.220.101.15': ['NL','Netherlands','Amsterdam','Europe',52.3676,4.9041],
+  '185.220.101.26': ['NL','Netherlands','Rotterdam','Europe',51.9225,4.4792],
+  '185.220.102.8':  ['NL','Netherlands','The Hague','Europe',52.0705,4.3007],
+  '185.107.56.58':  ['NL','Netherlands','Utrecht','Europe',52.0907,5.1214],
+  '194.165.17.42':  ['NL','Netherlands','Eindhoven','Europe',51.4416,5.4697],
+};
+const SSH_ATTACK_IPS=Object.keys(SSH_ATTACK_GEO);
+// Build source.geo object from lookup, adding slight jitter so pins spread on the map
+const sshGeoFor=ip=>{const g=SSH_ATTACK_GEO[ip];if(!g)return null;const[c,cn,ci,cont,lat,lon]=g;return{country_iso_code:c,country_name:cn,city_name:ci,continent_name:cont,location:{lat:+(lat+(Math.random()-0.5)*0.4).toFixed(4),lon:+(lon+(Math.random()-0.5)*0.4).toFixed(4)}}};
 
 const LINUX_TYPE_LOG_COUNT={
   ssh:      {low:60, med:200,high:600},
@@ -894,11 +953,12 @@ const VENDOR_INGEST={
       const sshAuth=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed)\s+(password|publickey)\s+for\s+(?:invalid user\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
       if(sshAuth){
         const ok=sshAuth[3]==='Accepted',method=sshAuth[4],user=sshAuth[5],ip=sshAuth[6],port=parseInt(sshAuth[7]);
+        const geo=ok?null:sshGeoFor(ip);
         return{...base,
           host:{name:sshAuth[1],hostname:sshAuth[1]},
           process:{name:'sshd',pid:parseInt(sshAuth[2])},
           user:{name:user},
-          source:{ip,address:ip,port},
+          source:{ip,address:ip,port,...(geo?{geo}:{})},
           event:{...base.event,category:['authentication'],type:[ok?'start':'info'],action:ok?'ssh-login':'ssh-login-failure',outcome:ok?'success':'failure'},
           system:{auth:{ssh:{event:sshAuth[3],method,ip,port},user}},
         };
@@ -918,12 +978,13 @@ const VENDOR_INGEST={
       // max auth attempts / disconnect / connection closed
       const sshMisc=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:.+?(?:from|by)\s+(?:authenticating user \S+ )?(\d+\.\d+\.\d+\.\d+)/);
       if(sshMisc&&(l.includes('maximum authentication')||l.includes('Disconnected')||l.includes('Connection closed'))){
+        const miscIp=sshMisc[3],miscGeo=sshGeoFor(miscIp);
         return{...base,
           host:{name:sshMisc[1],hostname:sshMisc[1]},
           process:{name:'sshd',pid:parseInt(sshMisc[2])},
-          source:{ip:sshMisc[3],address:sshMisc[3]},
+          source:{ip:miscIp,address:miscIp,...(miscGeo?{geo:miscGeo}:{})},
           event:{...base.event,category:['authentication'],type:['info'],action:'ssh-disconnect',outcome:l.includes('maximum')?'failure':'unknown'},
-          system:{auth:{ssh:{event:l.includes('maximum')?'MaxAuthAttempts':'Disconnected',ip:sshMisc[3]}}},
+          system:{auth:{ssh:{event:l.includes('maximum')?'MaxAuthAttempts':'Disconnected',ip:miscIp}}},
         };
       }
 
