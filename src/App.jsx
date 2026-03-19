@@ -48,7 +48,7 @@ const VENDOR_LOG_COUNT = {
   email:    { low: 20,  med: 50,  high: 100  },
   endpoint: { low: 100, med: 300, high: 1000 },
   windows:  { low: 100, med: 300, high: 1000 },
-  linux:    { low: 50,  med: 200, high: 500  },
+  linux:    { low: 150, med: 500, high: 1500 },
 };
 // Per Windows log type min counts by randomness level
 const WIN_TYPE_LOG_COUNT = {
@@ -223,11 +223,64 @@ function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
 
 // ─── Linux Generator ──────────────────────────────────────────────────────────
 const LINUX_HOSTS=['web-prod-01','db-master-01','app-server-03','bastion-01','k8s-node-02','monitoring-01'];
-function genSSH(ts){const host=randomLinuxHostname(),user=randomUser(),ip=randomIP(),port=rand(1024,65535),pid=rand(1000,65535),ok=Math.random()>0.3;return ok?`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','publickey'])} for ${user} from ${ip} port ${port} ssh2`:pick([`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${ip} port ${port} ssh2`,`${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test'])} from ${ip} port ${port} ssh2`]);}
-function genSudo(ts){const host=randomLinuxHostname(),user=randomUser(),cmd=pick(['/bin/systemctl restart nginx','/usr/bin/apt-get update','/bin/cat /etc/shadow','/usr/bin/docker ps -a','/bin/rm -rf /var/log/auth.log']),fail=Math.random()<0.15;return fail?`${syslogTimestamp(ts)} ${host} sudo: ${user} : user NOT in sudoers ; TTY=pts/${rand(0,10)} ; USER=root ; COMMAND=${cmd}`:`${syslogTimestamp(ts)} ${host} sudo: ${user} : TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;}
+
+function genSSH(ts){
+  const host=randomLinuxHostname(),user=randomUser(),ip=randomIP(),port=rand(1024,65535),pid=rand(1000,65535);
+  const r=Math.random();
+  // ~45% accepted, ~35% failed password, ~10% session open/close, ~10% misc
+  if(r<0.45) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Accepted ${pick(['password','password','publickey'])} for ${user} from ${ip} port ${port} ssh2`;
+  if(r<0.60) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for ${user} from ${ip} port ${port} ssh2`;
+  if(r<0.72) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Failed password for invalid user ${pick(['root','admin','test','oracle','pi','ubuntu'])} from ${ip} port ${port} ssh2`;
+  if(r<0.80) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session opened for user ${user} by (uid=${rand(0,1000)})`;
+  if(r<0.86) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: session closed for user ${user}`;
+  if(r<0.91) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Disconnected from authenticating user ${user} ${ip} port ${port} [preauth]`;
+  if(r<0.95) return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: error: maximum authentication attempts exceeded for ${user} from ${ip} port ${port} ssh2 [preauth]`;
+  return `${syslogTimestamp(ts)} ${host} sshd[${pid}]: Connection closed by ${ip} port ${port}`;
+}
+
+function genSudo(ts){
+  const host=randomLinuxHostname(),user=randomUser(),pid=rand(1000,65535);
+  const cmd=pick([
+    '/bin/systemctl restart nginx','/bin/systemctl stop firewalld',
+    '/usr/bin/apt-get update','/usr/bin/apt-get install -y curl',
+    '/bin/cat /etc/shadow','/bin/cat /etc/passwd',
+    '/usr/bin/docker ps -a','/usr/bin/docker exec -it webapp bash',
+    '/bin/rm -rf /var/log/auth.log','/bin/chmod 777 /etc/crontab',
+    '/usr/sbin/useradd deploy_svc','/usr/sbin/usermod -aG sudo jsmith',
+    '/usr/bin/passwd root','/bin/bash','/usr/bin/vi /etc/sudoers',
+    '/usr/bin/tcpdump -i eth0','/usr/sbin/iptables -F',
+    '/bin/mount /dev/sdb1 /mnt/data','/usr/bin/crontab -e',
+  ]);
+  const fail=Math.random()<0.12;
+  if(fail) return `${syslogTimestamp(ts)} ${host} sudo: ${user} : command not allowed ; TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;
+  const notSudoer=Math.random()<0.06;
+  if(notSudoer) return `${syslogTimestamp(ts)} ${host} sudo: ${user} : user NOT in sudoers ; TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;
+  return `${syslogTimestamp(ts)} ${host} sudo[${pid}]: ${user} : TTY=pts/${rand(0,10)} ; PWD=/home/${user} ; USER=root ; COMMAND=${cmd}`;
+}
+
+function genUserMgmt(ts){
+  const host=randomLinuxHostname(),pid=rand(1000,65535);
+  const actor=pick(['root',..._ADMIN_USERS]);
+  const target=pick([..._USERS_LIST,`svc_${pick(['deploy','monitor','backup','api','web'])}`]);
+  const gid=rand(1001,9999),uid=rand(1001,9999);
+  const adminGroups=['sudo','wheel','adm','docker','sudoers'];
+  const group=pick([...adminGroups,'developers','ops','finance','security','devops']);
+  const r=Math.random();
+  if(r<0.18) return `${syslogTimestamp(ts)} ${host} useradd[${pid}]: new user: name=${target}, UID=${uid}, GID=${uid}, home=/home/${target}, shell=/bin/bash`;
+  if(r<0.24) return `${syslogTimestamp(ts)} ${host} userdel[${pid}]: delete user '${target}'`;
+  if(r<0.32) return `${syslogTimestamp(ts)} ${host} usermod[${pid}]: change user '${target}' information`;
+  if(r<0.44) return `${syslogTimestamp(ts)} ${host} gpasswd[${pid}]: user ${target} added by ${actor} to group ${group}`;
+  if(r<0.54) return `${syslogTimestamp(ts)} ${host} gpasswd[${pid}]: user ${target} removed by ${actor} from group ${group}`;
+  if(r<0.64) return `${syslogTimestamp(ts)} ${host} groupadd[${pid}]: new group: name=${group}, GID=${gid}`;
+  if(r<0.70) return `${syslogTimestamp(ts)} ${host} groupdel[${pid}]: removed group '${group}'`;
+  if(r<0.80) return `${syslogTimestamp(ts)} ${host} passwd[${pid}]: password changed for ${target}`;
+  if(r<0.88) return `${syslogTimestamp(ts)} ${host} chage[${pid}]: changed password expiry for ${target}`;
+  return `${syslogTimestamp(ts)} ${host} usermod[${pid}]: add '${target}' to shadow group '${group}'`;
+}
+
 function genAuditd(ts){const host=randomLinuxHostname(),epoch=(ts.getTime()/1000).toFixed(3),uid=rand(1000,65535),exe=pick(['/usr/bin/curl','/usr/bin/wget','/bin/bash','/usr/bin/python3','/usr/bin/nc']);return `${syslogTimestamp(ts)} ${host} audit[${rand(1,9999)}]: type=SYSCALL msg=audit(${epoch}:${rand(100,9999)}): arch=c000003e syscall=${rand(0,350)} success=${pick(['yes','no'])} pid=${rand(1,65535)} uid=${uid} exe="${exe}" key="${pick(['file_access','process_exec','network_connect','priv_escalation'])}"`;}
 function genCron(ts){return `${syslogTimestamp(ts)} ${randomLinuxHostname()} CRON[${rand(1000,65535)}]: (${pick(['root',randomUser()])}) CMD (${pick(['/usr/local/bin/backup.sh','/opt/scripts/cleanup.py','/usr/bin/logrotate /etc/logrotate.conf'])})`;}
-function generateLinuxLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.3?genSSH(ts):r<0.5?genSudo(ts):r<0.7?genAuditd(ts):genCron(ts);});}
+function generateLinuxLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.38?genSSH(ts):r<0.60?genSudo(ts):r<0.78?genUserMgmt(ts):r<0.90?genAuditd(ts):genCron(ts);});}
 
 // ─── APT29 / NOBELIUM Verified IOCs ──────────────────────────────────────────
 // Sources: CISA AA20-352A, AA21-148A, AA22-074A, AA23-347A; Mandiant/FireEye UNC2452;
@@ -766,26 +819,54 @@ const VENDOR_INGEST={
     toDoc(l){try{const o=JSON.parse(l);const ch=o.winlog?.channel||'System';let ds='windows.system';if(ch.includes('PowerShell'))ds='windows.powershell_operational';else if(ch==='Security')ds='windows.security';else if(ch==='Application')ds='windows.application';else if(ch.includes('AppLocker'))ds='windows.applocker';return{...o,event:{...o.event,dataset:ds,module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField(ds)};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'windows.system',module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField('windows.system')};}}
   },
   linux:{
-    getIndex(l){if(l.includes('sshd[')||l.includes('sudo:'))return'logs-system.auth-default';if(l.includes('audit['))return'logs-auditd.log-default';return'logs-system.syslog-default';},
+    getIndex(l){
+      if(l.includes('sshd[')||l.includes('sudo[')||l.includes('sudo:')
+        ||l.match(/\s(useradd|userdel|usermod|groupadd|groupdel|gpasswd|passwd|chage)\[/))
+        return'logs-system.auth-default';
+      if(l.includes('audit['))return'logs-auditd.log-default';
+      return'logs-system.syslog-default';
+    },
     toDoc(l){
       let ds='system.syslog';
-      if(l.includes('sshd[')||l.includes('sudo:'))ds='system.auth';
+      if(l.includes('sshd[')||l.includes('sudo[')||l.includes('sudo:')
+        ||l.match(/\s(useradd|userdel|usermod|groupadd|groupdel|gpasswd|passwd|chage)\[/))
+        ds='system.auth';
       else if(l.includes('audit['))ds='auditd.log';
       const tm=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);
       const ts=tm?parseSyslogTs(tm[1],new Date().getUTCFullYear()).toISOString():new Date().toISOString();
       const base={'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],kind:'event',original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};
 
       // ── SSH (sshd) ──
-      // "Jan  5 10:30:00 web-prod-01 sshd[1234]: Accepted password for jsmith from 1.2.3.4 port 54321 ssh2"
-      const ssh=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed password for(?: invalid user)?|Invalid user)\s+(?:(?:password|publickey)\s+for\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
-      if(ssh){
-        const ok=ssh[3].startsWith('Accepted');
+      const sshAuth=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed password for(?: invalid user)?)\s+(?:(?:password|publickey)\s+for\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
+      if(sshAuth){
+        const ok=sshAuth[3].startsWith('Accepted');
         return{...base,
-          host:{name:ssh[1],hostname:ssh[1]},
-          process:{name:'sshd',pid:parseInt(ssh[2])},
-          user:{name:ssh[5]},
-          source:{ip:ssh[6],port:parseInt(ssh[7])},
+          host:{name:sshAuth[1],hostname:sshAuth[1]},
+          process:{name:'sshd',pid:parseInt(sshAuth[2])},
+          user:{name:sshAuth[5]},
+          source:{ip:sshAuth[6],address:sshAuth[6],port:parseInt(sshAuth[7])},
           event:{...base.event,category:['authentication'],type:[ok?'start':'info'],action:ok?'ssh-login':'ssh-login-failure',outcome:ok?'success':'failure'},
+        };
+      }
+      // session opened/closed
+      const sshSess=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+session (opened|closed) for user (\S+)/);
+      if(sshSess){
+        const opened=sshSess[3]==='opened';
+        return{...base,
+          host:{name:sshSess[1],hostname:sshSess[1]},
+          process:{name:'sshd',pid:parseInt(sshSess[2])},
+          user:{name:sshSess[4]},
+          event:{...base.event,category:['authentication','session'],type:[opened?'start':'end'],action:opened?'ssh-session-opened':'ssh-session-closed',outcome:'success'},
+        };
+      }
+      // max auth attempts / disconnect / connection closed
+      const sshMisc=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:.+?(?:from|by)\s+(?:authenticating user \S+ )?(\d+\.\d+\.\d+\.\d+)/);
+      if(sshMisc&&(l.includes('maximum authentication')||l.includes('Disconnected')||l.includes('Connection closed'))){
+        return{...base,
+          host:{name:sshMisc[1],hostname:sshMisc[1]},
+          process:{name:'sshd',pid:parseInt(sshMisc[2])},
+          source:{ip:sshMisc[3],address:sshMisc[3]},
+          event:{...base.event,category:['authentication'],type:['info'],action:'ssh-disconnect',outcome:l.includes('maximum')?'failure':'unknown'},
         };
       }
 
@@ -802,6 +883,31 @@ const VENDOR_INGEST={
           event:{...base.event,category:['process','iam'],type:['start'],action:'sudo',outcome:fail?'failure':'success'},
         };
       }
+
+      // ── User / Group management ──
+      // useradd:  "host useradd[pid]: new user: name=jsmith, UID=1001, ..."
+      const useradd=l.match(/(\S+)\s+useradd\[(\d+)\]:\s+new user:\s+name=([^,]+)/);
+      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'}};
+      // userdel:  "host userdel[pid]: delete user 'jsmith'"
+      const userdel=l.match(/(\S+)\s+userdel\[(\d+)\]:\s+delete user '([^']+)'/);
+      if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'}};
+      // usermod / shadow group:  "host usermod[pid]: change user 'jsmith' ..." or "add 'x' to shadow group 'y'"
+      const usermod=l.match(/(\S+)\s+usermod\[(\d+)\]:\s+(?:change user '([^']+)'|add '([^']+)' to shadow group '([^']+)')/);
+      if(usermod) return{...base,host:{name:usermod[1],hostname:usermod[1]},process:{name:'usermod',pid:parseInt(usermod[2])},user:{target:{name:usermod[3]||usermod[4]}},group:{name:usermod[5]},event:{...base.event,category:['iam'],type:['user','change'],action:'user-modified',outcome:'success'}};
+      // gpasswd add/remove:  "host gpasswd[pid]: user jsmith added by root to group sudo"
+      const gpasswdAdd=l.match(/(\S+)\s+gpasswd\[(\d+)\]:\s+user (\S+) added by (\S+) to group (\S+)/);
+      if(gpasswdAdd) return{...base,host:{name:gpasswdAdd[1],hostname:gpasswdAdd[1]},process:{name:'gpasswd',pid:parseInt(gpasswdAdd[2])},user:{name:gpasswdAdd[4],target:{name:gpasswdAdd[3]}},group:{name:gpasswdAdd[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-added-to-group',outcome:'success'}};
+      const gpasswdRem=l.match(/(\S+)\s+gpasswd\[(\d+)\]:\s+user (\S+) removed by (\S+) from group (\S+)/);
+      if(gpasswdRem) return{...base,host:{name:gpasswdRem[1],hostname:gpasswdRem[1]},process:{name:'gpasswd',pid:parseInt(gpasswdRem[2])},user:{name:gpasswdRem[4],target:{name:gpasswdRem[3]}},group:{name:gpasswdRem[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-removed-from-group',outcome:'success'}};
+      // groupadd:  "host groupadd[pid]: new group: name=developers, GID=1002"
+      const groupadd=l.match(/(\S+)\s+groupadd\[(\d+)\]:\s+new group:\s+name=([^,]+)/);
+      if(groupadd) return{...base,host:{name:groupadd[1],hostname:groupadd[1]},process:{name:'groupadd',pid:parseInt(groupadd[2])},group:{name:groupadd[3]},event:{...base.event,category:['iam'],type:['group','creation'],action:'group-created',outcome:'success'}};
+      // groupdel:  "host groupdel[pid]: removed group 'developers'"
+      const groupdel=l.match(/(\S+)\s+groupdel\[(\d+)\]:\s+removed group '([^']+)'/);
+      if(groupdel) return{...base,host:{name:groupdel[1],hostname:groupdel[1]},process:{name:'groupdel',pid:parseInt(groupdel[2])},group:{name:groupdel[3]},event:{...base.event,category:['iam'],type:['group','deletion'],action:'group-deleted',outcome:'success'}};
+      // passwd / chage:  "host passwd[pid]: password changed for jsmith"
+      const pwchange=l.match(/(\S+)\s+(passwd|chage)\[(\d+)\]:\s+(?:password changed|changed password expiry) for (\S+)/);
+      if(pwchange) return{...base,host:{name:pwchange[1],hostname:pwchange[1]},process:{name:pwchange[2],pid:parseInt(pwchange[3])},user:{target:{name:pwchange[4]}},event:{...base.event,category:['iam'],type:['user','change'],action:'password-changed',outcome:'success'}};
 
       // ── auditd ──
       // "Jan  5 10:30:00 host audit[123]: type=SYSCALL msg=audit(1234.567:89): ... pid=456 uid=1000 exe="/usr/bin/curl""
