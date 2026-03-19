@@ -1007,13 +1007,13 @@ const VENDOR_INGEST={
 
       // ── User / Group management ──
       const useradd=l.match(/(\S+)\s+useradd\[(\d+)\]:\s+new user:\s+name=([^,]+),\s*UID=(\d+),\s*GID=(\d+),\s*home=([^,]+),\s*shell=(\S+)/);
-      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'},system:{auth:{useradd:{name:useradd[3],uid:useradd[4],gid:useradd[5],home:useradd[6],shell:useradd[7]},user:'root'}}};
+      if(useradd) return{...base,host:{name:useradd[1],hostname:useradd[1]},process:{name:'useradd',pid:parseInt(useradd[2])},user:{name:useradd[3],target:{name:useradd[3]}},event:{...base.event,category:['iam'],type:['user','creation'],action:'user-created',outcome:'success'},system:{auth:{useradd:{name:useradd[3],uid:useradd[4],gid:useradd[5],home:useradd[6],shell:useradd[7]},user:'root'}}};
 
       const userdel=l.match(/(\S+)\s+userdel\[(\d+)\]:\s+delete user '([^']+)'/);
-      if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'},system:{auth:{useradd:{name:userdel[3]},user:'root'}}};
+      if(userdel) return{...base,host:{name:userdel[1],hostname:userdel[1]},process:{name:'userdel',pid:parseInt(userdel[2])},user:{name:userdel[3],target:{name:userdel[3]}},event:{...base.event,category:['iam'],type:['user','deletion'],action:'user-deleted',outcome:'success'},system:{auth:{useradd:{name:userdel[3]},user:'root'}}};
 
       const usermod=l.match(/(\S+)\s+usermod\[(\d+)\]:\s+(?:change user '([^']+)'|add '([^']+)' to shadow group '([^']+)')/);
-      if(usermod) return{...base,host:{name:usermod[1],hostname:usermod[1]},process:{name:'usermod',pid:parseInt(usermod[2])},user:{target:{name:usermod[3]||usermod[4]}},group:{name:usermod[5]},event:{...base.event,category:['iam'],type:['user','change'],action:'user-modified',outcome:'success'},system:{auth:{useradd:{name:usermod[3]||usermod[4]},user:'root'}}};
+      if(usermod) return{...base,host:{name:usermod[1],hostname:usermod[1]},process:{name:'usermod',pid:parseInt(usermod[2])},user:{name:usermod[3]||usermod[4],target:{name:usermod[3]||usermod[4]}},group:{name:usermod[5]},event:{...base.event,category:['iam'],type:['user','change'],action:'user-modified',outcome:'success'},system:{auth:{useradd:{name:usermod[3]||usermod[4]},user:'root'}}};
 
       const gpasswdAdd=l.match(/(\S+)\s+gpasswd\[(\d+)\]:\s+user (\S+) added by (\S+) to group (\S+)/);
       if(gpasswdAdd) return{...base,host:{name:gpasswdAdd[1],hostname:gpasswdAdd[1]},process:{name:'gpasswd',pid:parseInt(gpasswdAdd[2])},user:{name:gpasswdAdd[4],target:{name:gpasswdAdd[3]}},group:{name:gpasswdAdd[5]},event:{...base.event,category:['iam'],type:['group','change'],action:'user-added-to-group',outcome:'success'},system:{auth:{groupadd:{name:gpasswdAdd[5]},user:gpasswdAdd[4]}}};
@@ -1028,7 +1028,7 @@ const VENDOR_INGEST={
       if(groupdel) return{...base,host:{name:groupdel[1],hostname:groupdel[1]},process:{name:'groupdel',pid:parseInt(groupdel[2])},group:{name:groupdel[3]},event:{...base.event,category:['iam'],type:['group','deletion'],action:'group-deleted',outcome:'success'},system:{auth:{groupadd:{name:groupdel[3]},user:'root'}}};
 
       const pwchange=l.match(/(\S+)\s+(passwd|chage)\[(\d+)\]:\s+(?:password changed|changed password expiry) for (\S+)/);
-      if(pwchange) return{...base,host:{name:pwchange[1],hostname:pwchange[1]},process:{name:pwchange[2],pid:parseInt(pwchange[3])},user:{target:{name:pwchange[4]}},event:{...base.event,category:['iam'],type:['user','change'],action:'password-changed',outcome:'success'},system:{auth:{useradd:{name:pwchange[4]},user:'root'}}};
+      if(pwchange) return{...base,host:{name:pwchange[1],hostname:pwchange[1]},process:{name:pwchange[2],pid:parseInt(pwchange[3])},user:{name:pwchange[4],target:{name:pwchange[4]}},event:{...base.event,category:['iam'],type:['user','change'],action:'password-changed',outcome:'success'},system:{auth:{useradd:{name:pwchange[4]},user:'root'}}};
 
       // ── auditd ──
       // "Jan  5 10:30:00 host audit[123]: type=SYSCALL msg=audit(1234.567:89): ... pid=456 uid=1000 exe="/usr/bin/curl""
