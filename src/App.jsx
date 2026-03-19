@@ -689,7 +689,77 @@ const VENDOR_INGEST={
     };
   }},
   switch:{getIndex(){return'logs-cisco.ios-default';},toDoc(l){const tm=l.match(/>(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);const ts=tm?parseSyslogTs(tm[1],new Date().getUTCFullYear()).toISOString():new Date().toISOString();return{'@timestamp':ts,message:l,event:{dataset:'cisco.ios',module:'cisco',kind:'event',original:l},observer:{vendor:'Cisco',product:'Catalyst IOS',type:'switch'},agent:agentField('filebeat'),data_stream:dsField('cisco.ios')};}},
-  email:{getIndex(l){if(l.trimStart().startsWith('{'))return'logs-o365.audit-default';if(l.includes('postfix/')||l.includes('NOQUEUE'))return'logs-system.syslog-default';return'logs-microsoft_exchange_server.log-default';},toDoc(l){let ds='microsoft_exchange_server.log',ts=new Date().toISOString();if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);ds='o365.audit';ts=o.CreationTime||ts;}catch{}}else if(l.includes('postfix/')){ds='system.syslog';}return{'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
+  email:{
+    getIndex(l){if(l.trimStart().startsWith('{'))return'logs-o365.audit-default';if(l.includes('postfix/')||l.includes('NOQUEUE'))return'logs-system.syslog-default';return'logs-microsoft_exchange_server.log-default';},
+    toDoc(l){
+      // ── O365 Audit JSON ──
+      // {"CreationTime":"...","Operation":"Send","Workload":"Exchange","ClientIP":"...","UserId":"user@domain","ResultStatus":"Succeeded"}
+      if(l.trimStart().startsWith('{')){
+        try{
+          const o=JSON.parse(l);
+          const userId=o.UserId||'';
+          return{
+            '@timestamp':o.CreationTime||new Date().toISOString(),message:l,
+            event:{dataset:'o365.audit',module:'o365',kind:'event',action:o.Operation,category:['email'],outcome:o.ResultStatus==='Succeeded'?'success':'failure',original:l},
+            user:{name:userId,email:userId},
+            source:{ip:o.ClientIP,address:o.ClientIP},
+            agent:agentField('filebeat'),data_stream:dsField('o365.audit'),
+          };
+        }catch{}
+      }
+
+      // ── Postfix MTA ──
+      // sent:   "Jan  5 10:30:00 mail-gw-1.domain postfix/smtp[1234]: QUEUEID: to=<user@domain>, relay=mx[1.2.3.4]:25, status=sent"
+      // reject: "Jan  5 10:30:00 mail-gw-1.domain postfix/smtpd[1234]: NOQUEUE: reject: RCPT from unknown[1.2.3.4]: 554 ..."
+      if(l.includes('postfix/')||l.includes('NOQUEUE')){
+        const tm=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);
+        const ts=tm?parseSyslogTs(tm[1],new Date().getUTCFullYear()).toISOString():new Date().toISOString();
+        const host=l.match(/^\S+\s+\S+\s+(\S+)\s+postfix/)?.[1];
+        const pid=l.match(/postfix\/\w+\[(\d+)\]/)?.[1];
+        const proc=l.match(/postfix\/(\w+)/)?.[1];
+        const toAddr=l.match(/to=<([^>]+)>/)?.[1];
+        const rejectIp=l.match(/from\s+unknown\[([^\]]+)\]/)?.[1];
+        const status=l.match(/status=(\w+)/)?.[1];
+        const isReject=l.includes('NOQUEUE');
+        return{
+          '@timestamp':ts,message:l,
+          event:{dataset:'system.syslog',module:'system',kind:'event',category:['email'],action:isReject?'email-rejected':'email-delivery',outcome:status==='sent'?'success':isReject?'failure':'unknown',original:l},
+          ...(host?{host:{name:host,hostname:host}}:{}),
+          process:{name:`postfix/${proc||'smtp'}`,...(pid?{pid:parseInt(pid)}:{})},
+          ...(toAddr?{email:{to:{address:toAddr}}}:{}),
+          ...(rejectIp?{source:{ip:rejectIp,address:rejectIp}}:{}),
+          agent:agentField('filebeat'),data_stream:dsField('system.syslog'),
+        };
+      }
+
+      // ── Exchange tracking log (CSV) ──
+      // "2024-01-05T10:30:00Z,<msgid@domain>,ACTION,from@domain,to@domain,"Subject",Direction,Verdict,Disposition,SCL:n,Size:n"
+      const ex=l.match(/^([^,]+),(<[^>]*>),([^,]+),([^,]+),([^,]+),"([^"]*)",([^,]+),([^,]+),([^,]+),SCL:(\d+),Size:(\d+)/);
+      if(ex){
+        const [,isoTs,msgId,action,fromAddr,toAddr,subject,direction,verdict,disposition,,size]=ex;
+        const isClean=verdict==='Clean';
+        return{
+          '@timestamp':isoTs,message:l,
+          event:{dataset:'microsoft_exchange_server.log',module:'microsoft_exchange_server',kind:'event',category:['email'],action:action.toLowerCase(),outcome:disposition==='Deliver'?'success':'failure',original:l},
+          email:{
+            message_id:msgId,
+            from:{address:fromAddr},
+            to:{address:toAddr},
+            subject,
+            direction:direction.toLowerCase(),
+            attachments:[],
+          },
+          network:{bytes:parseInt(size)},
+          // Phishing/BEC verdicts surfaced as threat fields for SOC queries
+          ...(!isClean?{threat:{indicator:{type:'email',provider:'exchange-hygiene'}},tags:[`email-${verdict.toLowerCase()}`]}:{tags:[]}),
+          agent:agentField('filebeat'),data_stream:dsField('microsoft_exchange_server.log'),
+        };
+      }
+
+      // fallback
+      return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'microsoft_exchange_server.log',module:'microsoft_exchange_server',category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField('microsoft_exchange_server.log')};
+    }
+  },
   endpoint:{getIndex(l){try{const o=JSON.parse(l);if(o.event?.kind==='alert')return'logs-endpoint.alerts-default';if((o.event?.category||[]).includes('network'))return'logs-endpoint.events.network-default';}catch{}return'logs-endpoint.events.process-default';},toDoc(l){try{const o=JSON.parse(l);const cats=o.event?.category||[];let ds='endpoint.events.process';if(o.event?.kind==='alert')ds='endpoint.alerts';else if(cats.includes('network'))ds='endpoint.events.network';return{...o,agent:{...o.agent,type:'endpoint'},data_stream:dsField(ds),event:{...o.event,dataset:ds,module:'endpoint'}};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'endpoint.events.process'},agent:agentField('elastic_agent'),data_stream:dsField('endpoint.events.process')};}}},
   windows:{
     getIndex(l){try{const o=JSON.parse(l),ch=o.winlog?.channel||'';if(ch.includes('PowerShell'))return'logs-windows.powershell_operational-default';if(ch==='Security')return'logs-windows.security-default';if(ch==='Application')return'logs-windows.application-default';if(ch.includes('AppLocker'))return'logs-windows.applocker-default';return'logs-windows.system-default';}catch{return'logs-windows.system-default';}},
