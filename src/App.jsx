@@ -695,7 +695,74 @@ const VENDOR_INGEST={
     getIndex(l){try{const o=JSON.parse(l),ch=o.winlog?.channel||'';if(ch.includes('PowerShell'))return'logs-windows.powershell_operational-default';if(ch==='Security')return'logs-windows.security-default';if(ch==='Application')return'logs-windows.application-default';if(ch.includes('AppLocker'))return'logs-windows.applocker-default';return'logs-windows.system-default';}catch{return'logs-windows.system-default';}},
     toDoc(l){try{const o=JSON.parse(l);const ch=o.winlog?.channel||'System';let ds='windows.system';if(ch.includes('PowerShell'))ds='windows.powershell_operational';else if(ch==='Security')ds='windows.security';else if(ch==='Application')ds='windows.application';else if(ch.includes('AppLocker'))ds='windows.applocker';return{...o,event:{...o.event,dataset:ds,module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField(ds)};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'windows.system',module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField('windows.system')};}}
   },
-  linux:{getIndex(l){if(l.includes('sshd[')||l.includes('sudo:'))return'logs-system.auth-default';if(l.includes('audit['))return'logs-auditd.log-default';return'logs-system.syslog-default';},toDoc(l){let ds='system.syslog';if(l.includes('sshd[')||l.includes('sudo:'))ds='system.auth';else if(l.includes('audit['))ds='auditd.log';const tm=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);return{'@timestamp':tm?parseSyslogTs(tm[1],new Date().getUTCFullYear()).toISOString():new Date().toISOString(),message:l,event:{dataset:ds,module:ds.split('.')[0],original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};}},
+  linux:{
+    getIndex(l){if(l.includes('sshd[')||l.includes('sudo:'))return'logs-system.auth-default';if(l.includes('audit['))return'logs-auditd.log-default';return'logs-system.syslog-default';},
+    toDoc(l){
+      let ds='system.syslog';
+      if(l.includes('sshd[')||l.includes('sudo:'))ds='system.auth';
+      else if(l.includes('audit['))ds='auditd.log';
+      const tm=l.match(/^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})/);
+      const ts=tm?parseSyslogTs(tm[1],new Date().getUTCFullYear()).toISOString():new Date().toISOString();
+      const base={'@timestamp':ts,message:l,event:{dataset:ds,module:ds.split('.')[0],kind:'event',original:l},agent:agentField('filebeat'),data_stream:dsField(ds)};
+
+      // ── SSH (sshd) ──
+      // "Jan  5 10:30:00 web-prod-01 sshd[1234]: Accepted password for jsmith from 1.2.3.4 port 54321 ssh2"
+      const ssh=l.match(/^[\w\s:]+\s+(\S+)\s+sshd\[(\d+)\]:\s+(Accepted|Failed password for(?: invalid user)?|Invalid user)\s+(?:(?:password|publickey)\s+for\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/);
+      if(ssh){
+        const ok=ssh[3].startsWith('Accepted');
+        return{...base,
+          host:{name:ssh[1],hostname:ssh[1]},
+          process:{name:'sshd',pid:parseInt(ssh[2])},
+          user:{name:ssh[5]},
+          source:{ip:ssh[6],port:parseInt(ssh[7])},
+          event:{...base.event,category:['authentication'],type:[ok?'start':'info'],action:ok?'ssh-login':'ssh-login-failure',outcome:ok?'success':'failure'},
+        };
+      }
+
+      // ── sudo ──
+      // "Jan  5 10:30:00 host sudo: jsmith : TTY=pts/0 ; PWD=/home/jsmith ; USER=root ; COMMAND=/bin/cmd"
+      const sudo=l.match(/^[\w\s:]+\s+(\S+)\s+sudo:\s+(\S+)\s+:(.+)COMMAND=(.+)$/);
+      if(sudo){
+        const fail=l.includes('NOT in sudoers');
+        const cmdMatch=sudo[4]?.trim();
+        return{...base,
+          host:{name:sudo[1],hostname:sudo[1]},
+          process:{name:'sudo',command_line:cmdMatch},
+          user:{name:sudo[2],target:{name:'root'}},
+          event:{...base.event,category:['process','iam'],type:['start'],action:'sudo',outcome:fail?'failure':'success'},
+        };
+      }
+
+      // ── auditd ──
+      // "Jan  5 10:30:00 host audit[123]: type=SYSCALL msg=audit(1234.567:89): ... pid=456 uid=1000 exe="/usr/bin/curl""
+      const aud=l.match(/^[\w\s:]+\s+(\S+)\s+audit\[(\d+)\]:.*?pid=(\d+).*?uid=(\d+).*?exe="([^"]+)"/);
+      if(aud){
+        return{...base,
+          host:{name:aud[1],hostname:aud[1]},
+          process:{name:aud[5].split('/').pop(),pid:parseInt(aud[3]),executable:aud[5]},
+          user:{id:aud[4]},
+          event:{...base.event,category:['process'],type:['info'],action:'syscall'},
+        };
+      }
+
+      // ── cron ──
+      // "Jan  5 10:30:00 host CRON[1234]: (root) CMD (/usr/local/bin/backup.sh)"
+      const cron=l.match(/^[\w\s:]+\s+(\S+)\s+CRON\[(\d+)\]:\s+\((\S+)\)\s+CMD\s+\((.+)\)$/);
+      if(cron){
+        return{...base,
+          host:{name:cron[1],hostname:cron[1]},
+          process:{name:'cron',pid:parseInt(cron[2]),command_line:cron[4]},
+          user:{name:cron[3]},
+          event:{...base.event,category:['process'],type:['start'],action:'cron-job'},
+        };
+      }
+
+      // ── fallback: extract at least host and process from syslog header ──
+      const hdr=l.match(/^[\w\s:]+\s+(\S+)\s+(\S+?)(?:\[(\d+)\])?:/);
+      if(hdr)return{...base,host:{name:hdr[1],hostname:hdr[1]},process:{name:hdr[2],...(hdr[3]?{pid:parseInt(hdr[3])}:{})}};
+      return base;
+    }
+  },
 };
 
 async function pushLogsToElastic(logs,indexOverrides={}){
