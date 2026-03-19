@@ -453,7 +453,17 @@ function generateScenarioNoise(level,tr=120){
   }[level]||{};
   const noise={};
   setPool(level==='high'?20:level==='medium'?10:5);
-  Object.entries(conf).forEach(([vid,count])=>{const v=VENDORS.find(x=>x.id===vid);if(v)noise[vid]=v.generator(count,tr);});
+  Object.entries(conf).forEach(([vid,count])=>{
+    const v=VENDORS.find(x=>x.id===vid);if(!v)return;
+    // Endpoint noise must not generate event.kind="alert" docs — those go to
+    // logs-endpoint.alerts-default and Attack Discovery counts them as External Alerts,
+    // polluting the correlation with the real APT scenario alerts.
+    if(vid==='endpoint'){
+      noise[vid]=generateTimestamps(count,tr).map(ts=>Math.random()<0.57?genEndpointProcess(ts):genEndpointNetwork(ts));
+    }else{
+      noise[vid]=v.generator(count,tr);
+    }
+  });
   setPool(null);
   return noise;
 }
