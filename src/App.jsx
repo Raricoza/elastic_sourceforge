@@ -1008,10 +1008,10 @@ const VENDOR_INGEST={
           const o=JSON.parse(l);
           const userId=o.UserId||'';
           const outcome=o.ResultStatus==='Succeeded'||o.ResultStatus==='Success'?'success':'failure';
-          const category=o.Workload==='SharePoint'?['file']:o.Workload==='AzureActiveDirectory'?['authentication','iam']:['email'];
+          const category=o.Workload==='SharePoint'?['file','web']:o.Workload==='AzureActiveDirectory'?['authentication','iam']:['email'];
           return{
             '@timestamp':o.CreationTime||new Date().toISOString(),message:l,
-            event:{dataset:'o365.audit',module:'o365',kind:'event',action:o.Operation,category,outcome,original:l},
+            event:{dataset:'o365.audit',module:'o365',kind:'event',action:o.Operation,category,outcome,provider:o.Workload,original:l},
             user:{name:userId,email:userId},
             source:{ip:o.ClientIP,address:o.ClientIP},
             o365:{audit:{
