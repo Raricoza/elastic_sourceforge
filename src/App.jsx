@@ -1225,7 +1225,7 @@ const VENDOR_INGEST={
       if(l.trimStart().startsWith('{')){
         try{
           const o=JSON.parse(l);
-          if(o.log_type==='transaction_log')return'logs-microsoft_sqlserver.transaction_log-default';
+          if(o.log_type==='transaction_log')return'metrics-microsoft_sqlserver.transaction_log-default';
           if(o.event?.kind==='metric')return'metrics-microsoft_sqlserver.performance-default';
           if(o.action_id!==undefined)return'logs-microsoft_sqlserver.audit-default';
         }catch{}
@@ -1242,7 +1242,7 @@ const VENDOR_INGEST={
           const o=JSON.parse(l);
           if(o.log_type==='transaction_log'){
             const tl=o.microsoft_sqlserver?.transaction_log||{};
-            return{'@timestamp':o['@timestamp']||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'event',category:['database'],action:(tl.operation||'').toLowerCase(),outcome:'success',original:l},database:{instance:{name:tl.database_name}},...(tl.user_name?{user:{name:tl.user_name}}:{}),microsoft_sqlserver:{transaction_log:tl},agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.transaction_log')};
+            return{'@timestamp':o['@timestamp']||new Date().toISOString(),event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'metric',category:['database'],action:(tl.operation||'').toLowerCase(),outcome:'success'},database:{instance:{name:tl.database_name}},...(tl.user_name?{user:{name:tl.user_name}}:{}),microsoft_sqlserver:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.transaction_log',namespace:'default'}};
           }
           if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.performance',namespace:'default'}};
           if(o.action_id!==undefined){
@@ -1289,7 +1289,7 @@ const VENDORS=[
   {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
   {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
-  {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-microsoft_sqlserver.audit-default','logs-microsoft_sqlserver.transaction_log-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default','metrics-microsoft_sqlserver.performance-default'],generator:generateMSSQLLogs},
+  {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-microsoft_sqlserver.audit-default','metrics-microsoft_sqlserver.transaction_log-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default','metrics-microsoft_sqlserver.performance-default'],generator:generateMSSQLLogs},
 ];
 const SCENARIOS=[
   {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
