@@ -353,8 +353,6 @@ const MSSQL_AUDIT_ACTION_LABELS={SL:'SELECT',IN:'INSERT',UP:'UPDATE',DL:'DELETE'
 const MSSQL_TYPE_LOG_COUNT={audit:{low:25,med:80,high:250},errorlog:{low:25,med:80,high:250},translog:{low:30,med:100,high:300},agent:{low:15,med:40,high:150},metrics:{low:10,med:30,high:100}};
 const MSSQL_TYPES_DEFAULT=['audit','errorlog','translog','agent','metrics'];
 const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',translog:'Transaction Log',agent:'SQL Agent',metrics:'Metrics'};
-const MSSQL_LOG_OPS=['LOP_BEGIN_XACT','LOP_COMMIT_XACT','LOP_ABORT_XACT','LOP_INSERT_ROWS','LOP_MODIFY_ROW','LOP_DELETE_ROWS','LOP_BEGIN_CKPT','LOP_END_CKPT','LOP_SHRINK_NOOP','LOP_LOCK_XACT'];
-const MSSQL_LOG_CONTEXTS=['LCX_HEAP','LCX_CLUSTERED','LCX_NONCLUSTERED','LCX_IAM','LCX_PFS','LCX_GAM','LCX_SGAM','LCX_BOOT_PAGE','LCX_NULL'];
 const mssqlTs=d=>{const dt=d.toISOString().split('T')[0];const hh=String(d.getUTCHours()).padStart(2,'0');const mm=String(d.getUTCMinutes()).padStart(2,'0');const ss=String(d.getUTCSeconds()).padStart(2,'0');const cs=String(Math.floor(d.getUTCMilliseconds()/10)).padStart(2,'0');return`${dt} ${hh}:${mm}:${ss}.${cs}`;};
 
 function genSSH(ts){
@@ -495,14 +493,12 @@ function genMSSQLAgent(ts){
   return`${mssqlTs(ts)} - ? [098] SQLServerAgent terminated (normally)`;
 }
 function genMSSQLTransactionLog(ts){
-  const db=pick(MSSQL_DATABASES),op=pick(MSSQL_LOG_OPS),ctx=pick(MSSQL_LOG_CONTEXTS);
-  const table=pick(MSSQL_TABLES),user=pick(MSSQL_USERS),spid=rand(1,255);
-  const lsn=`${rand(10000,99999)}:${rand(1000,9999)}:${String(rand(1,999)).padStart(3,'0')}`;
-  const xid=`0x${Math.floor(Math.random()*0xffffffff).toString(16).padStart(8,'0')}`;
-  const txname=op==='LOP_BEGIN_XACT'?pick(['INSERT','UPDATE','DELETE','user_transaction']):'';
-  const recoveryModel=pick(['FULL','BULK_LOGGED','SIMPLE']);
-  const totalSize=rand(67108864,2147483648),usedSize=Math.floor(totalSize*Math.random()*0.8);
-  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),microsoft_sqlserver:{transaction_log:{database_name:db,operation:op,context:ctx,transaction_id:xid,lsn,transaction_name:txname,object_name:table,user_name:user,spid,log_record_length:rand(60,8000),recovery_model:recoveryModel,total_log_size_bytes:totalSize,used_log_space_bytes:usedSize,used_log_space_pct:+((usedSize/totalSize)*100).toFixed(1),log_since_last_checkpoint_bytes:rand(0,usedSize),log_since_last_log_backup_bytes:rand(0,usedSize),active_log_size_bytes:rand(0,usedSize)}},event:{dataset:'microsoft_sqlserver.transaction_log',module:'microsoft_sqlserver',kind:'event'}});
+  const db=pick(MSSQL_DATABASES),host=pick(MSSQL_HOSTS);
+  const totalSize=rand(67108864,2147483648);
+  const usedSize=Math.floor(totalSize*(Math.random()*0.8+0.05));
+  const pct=+((usedSize/totalSize)*100).toFixed(2);
+  const activeVlf=rand(4,128);
+  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},sqlserver:{transaction_log:{database_name:db,total_log_size_bytes:totalSize,used_log_space_bytes:usedSize,percent_log_used:pct,active_vlf_count:activeVlf,active_vlf_size_bytes:Math.floor(usedSize*0.3),log_recovery_size_bytes:rand(0,usedSize),log_since_last_checkpoint_bytes:rand(0,Math.floor(usedSize*0.5)),log_since_last_log_backup_bytes:rand(0,usedSize),log_backup_time:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},event:{dataset:'microsoft_sqlserver.transaction_log',module:'microsoft_sqlserver',kind:'metric'}});
 }
 function genMSSQLMetrics(ts){
   const host=pick(MSSQL_HOSTS);
@@ -1241,8 +1237,8 @@ const VENDOR_INGEST={
         try{
           const o=JSON.parse(l);
           if(o.log_type==='transaction_log'){
-            const tl=o.microsoft_sqlserver?.transaction_log||{};
-            return{'@timestamp':o['@timestamp']||new Date().toISOString(),event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'metric',category:['database'],action:(tl.operation||'').toLowerCase(),outcome:'success'},database:{instance:{name:tl.database_name}},...(tl.user_name?{user:{name:tl.user_name}}:{}),microsoft_sqlserver:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.transaction_log',namespace:'default'}};
+            const tl=o.sqlserver?.transaction_log||{};
+            return{'@timestamp':o['@timestamp']||new Date().toISOString(),...(o.host?{host:o.host}:{}),event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'metric'},sqlserver:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.transaction_log',namespace:'default'}};
           }
           if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.performance',namespace:'default'}};
           if(o.action_id!==undefined){
