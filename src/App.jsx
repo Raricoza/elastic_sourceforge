@@ -498,11 +498,11 @@ function genMSSQLTransactionLog(ts){
   const usedSize=Math.floor(totalSize*(Math.random()*0.8+0.05));
   const pct=+((usedSize/totalSize)*100).toFixed(2);
   const activeVlf=rand(4,128);
-  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{transaction_log:{database_name:db,total_log_size:{bytes:totalSize},used_log_space:{bytes:usedSize,pct},active_size:{bytes:Math.floor(usedSize*0.3)},active_vlf_count:activeVlf,log_since_last:{checkpoint:{bytes:rand(0,Math.floor(usedSize*0.5))},backup:{bytes:rand(0,usedSize),date:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},log_recovery_size:{bytes:rand(0,usedSize)}}},event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'}});
+  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{database_name:db,total_log_size:{bytes:totalSize},used_log_space:{bytes:usedSize,pct},active_size:{bytes:Math.floor(usedSize*0.3)},active_vlf_count:activeVlf,log_since_last:{checkpoint:{bytes:rand(0,Math.floor(usedSize*0.5))},backup:{bytes:rand(0,usedSize),date:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},log_recovery_size:{bytes:rand(0,usedSize)}}},event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'}});
 }
 function genMSSQLMetrics(ts){
   const host=pick(MSSQL_HOSTS);
-  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{performance:{batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory:{kb:rand(2097152,67108864)},total_server_memory:{kb:rand(1048576,67108864)}}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
+  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory:{kb:rand(2097152,67108864)},total_server_memory:{kb:rand(1048576,67108864)}}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
 }
 function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
   const active=types.length?types:MSSQL_TYPES_DEFAULT;
@@ -1237,10 +1237,10 @@ const VENDOR_INGEST={
         try{
           const o=JSON.parse(l);
           if(o.log_type==='transaction_log'){
-            const tl=o.mssql?.transaction_log||{};
-            return{'@timestamp':o['@timestamp']||new Date().toISOString(),...(o.host?{host:o.host}:{}),event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'},mssql:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.transaction_log',namespace:'default'}};
+            const m=o.mssql?.metrics||{};
+            return{'@timestamp':o['@timestamp']||new Date().toISOString(),...(o.host?{host:o.host}:{}),event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'},mssql:{metrics:m},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.transaction_log',namespace:'default'}};
           }
-          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.performance',namespace:'default'}};
+          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:o.event.dataset||'mssql.performance',namespace:'default'}};
           if(o.action_id!==undefined){
             return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'mssql.audit',module:mod,kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'mssql.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('mssql.audit')};
           }
