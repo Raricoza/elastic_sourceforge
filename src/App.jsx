@@ -498,11 +498,11 @@ function genMSSQLTransactionLog(ts){
   const usedSize=Math.floor(totalSize*(Math.random()*0.8+0.05));
   const pct=+((usedSize/totalSize)*100).toFixed(2);
   const activeVlf=rand(4,128);
-  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},sqlserver:{transaction_log:{database_name:db,total_log_size_bytes:totalSize,used_log_space_bytes:usedSize,percent_log_used:pct,active_vlf_count:activeVlf,active_vlf_size_bytes:Math.floor(usedSize*0.3),log_recovery_size_bytes:rand(0,usedSize),log_since_last_checkpoint_bytes:rand(0,Math.floor(usedSize*0.5)),log_since_last_log_backup_bytes:rand(0,usedSize),log_backup_time:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},event:{dataset:'microsoft_sqlserver.transaction_log',module:'microsoft_sqlserver',kind:'metric'}});
+  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{transaction_log:{database_name:db,total_log_size:{bytes:totalSize},used_log_space:{bytes:usedSize,pct},active_size:{bytes:Math.floor(usedSize*0.3)},active_vlf_count:activeVlf,log_since_last:{checkpoint:{bytes:rand(0,Math.floor(usedSize*0.5))},backup:{bytes:rand(0,usedSize),date:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},log_recovery_size:{bytes:rand(0,usedSize)}}},event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'}});
 }
 function genMSSQLMetrics(ts){
   const host=pick(MSSQL_HOSTS);
-  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},microsoft_sqlserver:{performance:{batch_requests_per_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),full_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864),cpu_usage_pct:rand(1,95)}},event:{dataset:'microsoft_sqlserver.performance',module:'microsoft_sqlserver',kind:'metric'}});
+  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{performance:{batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory:{kb:rand(2097152,67108864)},total_server_memory:{kb:rand(1048576,67108864)}}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
 }
 function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
   const active=types.length?types:MSSQL_TYPES_DEFAULT;
@@ -1221,28 +1221,28 @@ const VENDOR_INGEST={
       if(l.trimStart().startsWith('{')){
         try{
           const o=JSON.parse(l);
-          if(o.log_type==='transaction_log')return'metrics-microsoft_sqlserver.transaction_log-default';
-          if(o.event?.kind==='metric')return'metrics-microsoft_sqlserver.performance-default';
-          if(o.action_id!==undefined)return'logs-microsoft_sqlserver.audit-default';
+          if(o.log_type==='transaction_log')return'metrics-mssql.transaction_log-default';
+          if(o.event?.kind==='metric')return'metrics-mssql.performance-default';
+          if(o.action_id!==undefined)return'logs-mssql.audit-default';
         }catch{}
-        return'logs-microsoft_sqlserver.log-default';
+        return'logs-mssql.log-default';
       }
-      if(l.match(/ - [!+?I] \[/))return'logs-microsoft_sqlserver.agent-default';
-      return'logs-microsoft_sqlserver.log-default';
+      if(l.match(/ - [!+?I] \[/))return'logs-mssql.agent-default';
+      return'logs-mssql.log-default';
     },
     toDoc(l){
-      const mod='microsoft_sqlserver';
+      const mod='mssql';
       // ── Transaction Log / Metrics / Audit (JSON) ──
       if(l.trimStart().startsWith('{')){
         try{
           const o=JSON.parse(l);
           if(o.log_type==='transaction_log'){
-            const tl=o.sqlserver?.transaction_log||{};
-            return{'@timestamp':o['@timestamp']||new Date().toISOString(),...(o.host?{host:o.host}:{}),event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'metric'},sqlserver:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.transaction_log',namespace:'default'}};
+            const tl=o.mssql?.transaction_log||{};
+            return{'@timestamp':o['@timestamp']||new Date().toISOString(),...(o.host?{host:o.host}:{}),event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'},mssql:{transaction_log:tl},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.transaction_log',namespace:'default'}};
           }
-          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.performance',namespace:'default'}};
+          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.performance',namespace:'default'}};
           if(o.action_id!==undefined){
-            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.audit',module:mod,kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'microsoft_sqlserver.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.audit')};
+            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'mssql.audit',module:mod,kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'mssql.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('mssql.audit')};
           }
         }catch{}
       }
@@ -1252,14 +1252,14 @@ const VENDOR_INGEST={
         const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
         const sev=l.includes(' - ! ')?'failure':l.includes(' - + ')?'unknown':'success';
         const errM=l.match(/SQLServer Error: (\d+)/);
-        return{'@timestamp':ts,message:l,event:{dataset:'microsoft_sqlserver.agent',module:mod,kind:'event',category:['database'],action:'sql-agent-event',outcome:sev,original:l},process:{name:'SQLAGENT'},...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.agent')};
+        return{'@timestamp':ts,message:l,event:{dataset:'mssql.agent',module:mod,kind:'event',category:['database'],action:'sql-agent-event',outcome:sev,original:l},process:{name:'SQLAGENT'},...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.agent')};
       }
       // ── ERRORLOG ──
       const tsM=l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)/);
       const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
       const loginM=l.match(/Login failed for user '([^']+)'.*\[CLIENT: ([^\]]+)\]/);
       const errM=l.match(/Error: (\d+),/);
-      return{'@timestamp':ts,message:l,event:{dataset:'microsoft_sqlserver.log',module:mod,kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.log')};
+      return{'@timestamp':ts,message:l,event:{dataset:'mssql.log',module:mod,kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.log')};
     },
   },
 };
@@ -1285,7 +1285,7 @@ const VENDORS=[
   {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
   {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
-  {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-microsoft_sqlserver.audit-default','metrics-microsoft_sqlserver.transaction_log-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default','metrics-microsoft_sqlserver.performance-default'],generator:generateMSSQLLogs},
+  {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-mssql.audit-default','metrics-mssql.transaction_log-default','logs-mssql.log-default','logs-mssql.agent-default','metrics-mssql.performance-default'],generator:generateMSSQLLogs},
 ];
 const SCENARIOS=[
   {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
