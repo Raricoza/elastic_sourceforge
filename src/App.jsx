@@ -36,10 +36,13 @@ const VENDOR_POOL = {
   endpoint: { low: 10,  med: 50,  high: null },
   windows:  { low: 8,   med: 40,  high: null },
   linux:    { low: 5,   med: 15,  high: null },
+  oracle:   { low: 4,   med: 6,   high: 8    },
+  mssql:    { low: 4,   med: 6,   high: 8    },
 };
 const VENDOR_RND_DEFAULT = {
   fortinet: 'med', paloalto: 'med', switch: 'low',
   email: 'med', endpoint: 'high', windows: 'med', linux: 'med',
+  oracle: 'med', mssql: 'med',
 };
 const VENDOR_LOG_COUNT = {
   fortinet: { low: 100, med: 250, high: 500  },
@@ -49,6 +52,8 @@ const VENDOR_LOG_COUNT = {
   endpoint: { low: 100, med: 300, high: 1000 },
   windows:  { low: 100, med: 300, high: 1000 },
   linux:    { low: 150, med: 500, high: 1500 },
+  oracle:   { low: 80,  med: 250, high: 800  },
+  mssql:    { low: 80,  med: 250, high: 800  },
 };
 // Per Windows log type min counts by randomness level
 const WIN_TYPE_LOG_COUNT = {
@@ -323,6 +328,33 @@ const LINUX_TYPE_LOG_COUNT={
 const LINUX_TYPES_DEFAULT=['ssh','sudo','usermgmt','auditd','cron'];
 const LINUX_TYPE_LABELS={ssh:'SSH',sudo:'Sudo',usermgmt:'User Mgmt',auditd:'Auditd',cron:'Cron'};
 
+// ─── Oracle DB Constants ──────────────────────────────────────────────────────
+const ORACLE_HOSTS=['ora-prod-01','ora-prod-02','ora-prod-03','ora-dr-01','ora-dr-02','ora-rpt-01','ora-standby-01'];
+const ORACLE_USERS=['SCOTT','HR','OE','SH','SYSTEM','SYS','APPS','REPORTS_USER','BATCH_USER','APEX_PUBLIC_USER','DBSNMP','C##APP_OWNER'];
+const ORACLE_SCHEMAS_TABLES=['HR.EMPLOYEES','HR.DEPARTMENTS','HR.JOBS','OE.ORDERS','OE.ORDER_ITEMS','OE.CUSTOMERS','SH.SALES','SH.PRODUCTS','SH.CHANNELS','SYSTEM.V$SESSION','SYSTEM.DBA_USERS','APPS.AP_INVOICES_ALL','APPS.PO_HEADERS_ALL'];
+const ORACLE_ERROR_CODES=['ORA-00001','ORA-00060','ORA-01017','ORA-01555','ORA-04031','ORA-12170','ORA-28000','ORA-00942'];
+const ORACLE_ERROR_MSGS={'ORA-00001':'unique constraint violated','ORA-00060':'Deadlock detected. See Note 60.1 at My Oracle Support for help.','ORA-01017':'invalid username/password; logon denied','ORA-01555':'snapshot too old: rollback segment number with name "" too small','ORA-04031':'unable to allocate bytes of shared memory','ORA-12170':'TNS:Connect timeout occurred','ORA-28000':'the account is locked','ORA-00942':'table or view does not exist'};
+const ORACLE_SERVICE_NAMES=['ORCL','ORCLPDB1','SALES_PDB','HR_PDB','REPORTS_PDB'];
+const ORACLE_DBIDS=['1234567890','2345678901','3456789012','4567890123'];
+const ORACLE_TYPE_LOG_COUNT={audit:{low:30,med:100,high:300},alert:{low:20,med:60,high:200},listener:{low:20,med:60,high:200},metrics:{low:10,med:30,high:100}};
+const ORACLE_TYPES_DEFAULT=['audit','alert','listener','metrics'];
+const ORACLE_TYPE_LABELS={audit:'Audit',alert:'Alert Log',listener:'Listener',metrics:'Metrics'};
+const oracleIsoTs=d=>d.toISOString().replace(/(\.\d{3})Z$/,(_,ms)=>ms+'000+00:00');
+const oracleListenerTs=d=>{const m=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];return`${String(d.getUTCDate()).padStart(2,'0')}-${m[d.getUTCMonth()]}-${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')}`;};
+
+// ─── MSSQL Constants ──────────────────────────────────────────────────────────
+const MSSQL_HOSTS=['sql-prod-01','sql-prod-02','sql-prod-03','sql-reporting-01','sql-reporting-02','sql-dr-01','sql-ha-01','sql-dev-01'];
+const MSSQL_USERS=['sa','AppUser','ReportUser','BackupUser','CORP\\jsmith','CORP\\dbadmin','CORP\\svc_sql','CORP\\mwilson','NT SERVICE\\MSSQLSERVER','ETL_User','ReadOnlyUser'];
+const MSSQL_DATABASES=['AdventureWorks2019','HR_DB','SalesDB','ReportingDB','master','msdb','FinanceDB','InventoryDB'];
+const MSSQL_TABLES=['dbo.Employees','dbo.Orders','dbo.Customers','dbo.SalesHistory','dbo.Products','dbo.Inventory','HumanResources.Employee','Sales.SalesOrderHeader','Production.Product','Person.Person'];
+const MSSQL_ERROR_CODES={18456:'Login failed for user',208:'Invalid object name',547:'Constraint violation',1205:'Transaction was deadlocked',8152:'String or binary data would be truncated'};
+const MSSQL_AUDIT_ACTIONS=['SL','IN','UP','DL','EX','AU','LO'];
+const MSSQL_AUDIT_ACTION_LABELS={SL:'SELECT',IN:'INSERT',UP:'UPDATE',DL:'DELETE',EX:'EXECUTE',AU:'AUDIT_CHANGE',LO:'LOGOUT'};
+const MSSQL_TYPE_LOG_COUNT={audit:{low:25,med:80,high:250},errorlog:{low:25,med:80,high:250},agent:{low:15,med:40,high:150},metrics:{low:10,med:30,high:100}};
+const MSSQL_TYPES_DEFAULT=['audit','errorlog','agent','metrics'];
+const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',agent:'SQL Agent',metrics:'Metrics'};
+const mssqlTs=d=>{const dt=d.toISOString().split('T')[0];const hh=String(d.getUTCHours()).padStart(2,'0');const mm=String(d.getUTCMinutes()).padStart(2,'0');const ss=String(d.getUTCSeconds()).padStart(2,'0');const cs=String(Math.floor(d.getUTCMilliseconds()/10)).padStart(2,'0');return`${dt} ${hh}:${mm}:${ss}.${cs}`;};
+
 function genSSH(ts){
   const host=randomLinuxHostname(),user=randomUser(),port=rand(1024,65535),pid=rand(1000,65535);
   // Successful logins use internal/RFC1918 IPs; failures use real external IPs for GeoIP map
@@ -391,6 +423,88 @@ function generateLinuxLogs(count,tr,types=LINUX_TYPES_DEFAULT){
     let r=Math.random()*total,cum=0;
     for(const [t,w] of filtered){cum+=w;if(r<cum)return t==='ssh'?genSSH(ts):t==='sudo'?genSudo(ts):t==='usermgmt'?genUserMgmt(ts):t==='auditd'?genAuditd(ts):genCron(ts);}
     return genCron(ts);
+  });
+}
+
+// ─── Oracle DB Generators ────────────────────────────────────────────────────
+function genOracleAudit(ts){
+  const user=pick(ORACLE_USERS),clientIp=randomIP(),host=pick(ORACLE_HOSTS),table=pick(ORACLE_SCHEMAS_TABLES);
+  const action=pick(['SELECT','INSERT','UPDATE','DELETE','EXECUTE','LOGON','LOGOFF']);
+  const dbid=pick(ORACLE_DBIDS),status=Math.random()<0.08?pick(['1','16','28']):'0';
+  const port=rand(1024,65535);
+  const sql=action==='SELECT'?`SELECT * FROM ${table} WHERE ROWNUM <= 100`:action==='INSERT'?`INSERT INTO ${table} VALUES (:1,:2,:3)`:action==='UPDATE'?`UPDATE ${table} SET STATUS='ACTIVE' WHERE ID=:1`:action==='DELETE'?`DELETE FROM ${table} WHERE ID=:1`:`EXEC ${table.split('.')[1]||'PKG'}.PROCEDURE`;
+  const addr=`(ADDRESS=(PROTOCOL=tcp)(HOST=${clientIp})(PORT=${port}))`;
+  return`${oracleIsoTs(ts)} LENGTH: "200" ACTION :[${action.length}] "${action}" DATABASE USER:[${user.length}] "${user}" PRIVILEGE :[4] "NONE" CLIENT USER:[6] "oracle" STATUS:[${status.length}] "${status}" CLIENT ADDRESS:[${addr.length}] "${addr}" USERHOST:[${host.length}] "${host}.corp" DBID:[10] "${dbid}" SQLTEXT:[${sql.length}] "${sql}"`;
+}
+function genOracleAlert(ts){
+  const isError=Math.random()<0.25;
+  const line1=oracleIsoTs(ts);
+  if(isError){const errCode=pick(ORACLE_ERROR_CODES);return`${line1}\n${errCode}: ${ORACLE_ERROR_MSGS[errCode]||'Database error occurred'}`;}
+  const seq=rand(10000,99999),logNum=rand(1,5);
+  return`${line1}\nThread 1 advanced to log sequence ${seq} (LGWR switch)\n  Current log# ${logNum} seq# ${seq} mem# 0: /u01/app/oracle/oradata/ORCL/redo0${logNum}.log`;
+}
+function genOracleListener(ts){
+  const clientIp=randomIP(),svc=pick(ORACLE_SERVICE_NAMES),host=pick(ORACLE_HOSTS),port=rand(1024,65535);
+  const prog=pick(['JDBC Thin Client','OCI','SQL*Plus','Python cx_Oracle','node-oracledb']);
+  const status=Math.random()<0.05?'12514':'0';
+  return`${oracleListenerTs(ts)} * (CONNECT_DATA=(SERVER=DEDICATED)(SERVICE_NAME=${svc})(CID=(PROGRAM=${prog})(HOST=${clientIp})(USER=oracle))) * (ADDRESS=(PROTOCOL=tcp)(HOST=${clientIp})(PORT=${port})) * establish * ${svc} * ${status}`;
+}
+function genOracleMetrics(ts){
+  const host=pick(ORACLE_HOSTS);
+  return JSON.stringify({'@timestamp':oracleIsoTs(ts),host:{name:host,hostname:host},oracle:{performance:{db_time_ms:rand(1000,50000),physical_reads:rand(0,5000),logical_reads:rand(5000,200000),hard_parses:rand(0,500),soft_parses:rand(500,10000),redo_size_bytes:rand(100000,10000000),sessions_active:rand(10,500),sessions_inactive:rand(0,100),wait_time:{db_file_sequential_read_ms:rand(0,2000),log_file_sync_ms:rand(0,500),buffer_busy_waits_ms:rand(0,200),latch_free_ms:rand(0,50)}}},event:{dataset:'oracle.performance',module:'oracle',kind:'metric'}});
+}
+function generateOracleLogs(count,tr,types=ORACLE_TYPES_DEFAULT){
+  const active=types.length?types:ORACLE_TYPES_DEFAULT;
+  const W={audit:35,alert:25,listener:25,metrics:15};
+  const filtered=Object.entries(W).filter(([t])=>active.includes(t));
+  const total=filtered.reduce((s,[,w])=>s+w,0);
+  return generateTimestamps(count,tr).map(ts=>{
+    let r=Math.random()*total,cum=0;
+    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genOracleAudit(ts):t==='alert'?genOracleAlert(ts):t==='listener'?genOracleListener(ts):genOracleMetrics(ts);}
+    return genOracleMetrics(ts);
+  });
+}
+
+// ─── MSSQL Generators ────────────────────────────────────────────────────────
+function genMSSQLAudit(ts){
+  const user=pick(MSSQL_USERS),db=pick(MSSQL_DATABASES),table=pick(MSSQL_TABLES);
+  const schema=table.split('.')[0],obj=table.split('.')[1];
+  const action=pick(MSSQL_AUDIT_ACTIONS),label=MSSQL_AUDIT_ACTION_LABELS[action];
+  const sid=rand(1,255),succ=Math.random()>0.07,clientIp=randomIP();
+  const stmts={SL:`SELECT * FROM ${table} WHERE ID=${rand(1,9999)}`,IN:`INSERT INTO ${table} (Col1,Col2) VALUES ('val1','val2')`,UP:`UPDATE ${table} SET Status='Active' WHERE ID=${rand(1,9999)}`,DL:`DELETE FROM ${table} WHERE ID=${rand(1,9999)}`,EX:`EXEC ${schema}.usp_GetData @ID=${rand(1,9999)}`,AU:`ALTER SERVER AUDIT MyAudit ENABLE`,LO:''};
+  return JSON.stringify({event_time:ts.toISOString(),action_id:action,action_name:label,succeeded:succ,session_id:sid,server_principal_name:user,database_name:db,schema_name:schema,object_name:obj,statement:stmts[action]||'',client_ip:clientIp});
+}
+function genMSSQLErrorLog(ts){
+  const r=Math.random(),spid=`spid${rand(1,255)}`;
+  if(r<0.20){const user=pick(MSSQL_USERS),ip=randomIP();return`${mssqlTs(ts)} ${spid.padEnd(12)} Login failed for user '${user}'. Reason: Password did not match that for the login provided. [CLIENT: ${ip}]`;}
+  if(r<0.35){const db=pick(MSSQL_DATABASES);return`${mssqlTs(ts)} ${spid.padEnd(12)} Starting up database '${db}'.`;}
+  if(r<0.50){const db=pick(MSSQL_DATABASES);return`${mssqlTs(ts)} Backup       Database backed up. Database: ${db}, pages dumped: ${rand(100,50000)}, first LSN: ${rand(10000,99999)}:${rand(100,999)}:1, last LSN: ${rand(100000,999999)}:${rand(100,999)}:1.`;}
+  if(r<0.62){const [code,msg]=pick(Object.entries(MSSQL_ERROR_CODES)),obj=pick(MSSQL_TABLES);return`${mssqlTs(ts)} ${spid.padEnd(12)} Error: ${code}, Severity: ${rand(11,25)}, State: 1. ${msg} '${obj}'.`;}
+  if(r<0.75){return`${mssqlTs(ts)} spid${rand(1,10).toString().padEnd(10)} Checkpoint complete: ${rand(100,5000)} log records flushed.`;}
+  if(r<0.87){return`${mssqlTs(ts)} ${spid.padEnd(12)} Transaction (Process ID ${rand(50,200)}) was deadlocked on lock resources with another process and has been chosen as the deadlock victim. Rerun the transaction.`;}
+  return`${mssqlTs(ts)} ${spid.padEnd(12)} Memory grant request ${rand(1024,65536)} KB waiting ${rand(100,5000)} ms for resource.`;
+}
+function genMSSQLAgent(ts){
+  const r=Math.random();
+  if(r<0.30){const[code,desc]=pick(Object.entries(MSSQL_ERROR_CODES));return`${mssqlTs(ts)} - ! [${rand(200,399)}] SQLServer Error: ${code}, ${desc}. [SQLSTATE ${pick(['42S02','23000','40001','22001'])}]`;}
+  if(r<0.45){return`${mssqlTs(ts)} - + [260] Unable to start mail session (reason: No mail profile defined)`;}
+  if(r<0.65){const job=pick(['DailyBackup','WeeklyIndex','HourlyETL','NightlyStats','LogShipping']);return`${mssqlTs(ts)} - I [364] Job '${job}' started at step 1`;}
+  if(r<0.82){const job=pick(['DailyBackup','WeeklyIndex','HourlyETL','NightlyStats','LogShipping']),ok=Math.random()>0.15;return`${mssqlTs(ts)} - ${ok?'+':'!'} [208] Job '${job}' ${ok?'succeeded':'failed'}.`;}
+  return`${mssqlTs(ts)} - ? [098] SQLServerAgent terminated (normally)`;
+}
+function genMSSQLMetrics(ts){
+  const host=pick(MSSQL_HOSTS);
+  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{performance:{batch_requests_per_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),full_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864),cpu_usage_pct:rand(1,95)}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
+}
+function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
+  const active=types.length?types:MSSQL_TYPES_DEFAULT;
+  const W={audit:30,errorlog:35,agent:20,metrics:15};
+  const filtered=Object.entries(W).filter(([t])=>active.includes(t));
+  const total=filtered.reduce((s,[,w])=>s+w,0);
+  return generateTimestamps(count,tr).map(ts=>{
+    let r=Math.random()*total,cum=0;
+    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genMSSQLAudit(ts):t==='errorlog'?genMSSQLErrorLog(ts):t==='agent'?genMSSQLAgent(ts):genMSSQLMetrics(ts);}
+    return genMSSQLMetrics(ts);
   });
 }
 
@@ -1060,6 +1174,73 @@ const VENDOR_INGEST={
       return base;
     }
   },
+  oracle:{
+    getIndex(l){
+      if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);if(o.event?.kind==='metric')return'metrics-oracle.performance-default';}catch{}return'logs-oracle.audit-default';}
+      if(l.includes('\nThread ')||l.includes('\nORA-'))return'logs-oracle.database_audit-default';
+      if(l.match(/^\d{2}-[A-Z]{3}-\d{4}/))return'logs-oracle.listener-default';
+      return'logs-oracle.audit-default';
+    },
+    toDoc(l){
+      // ── Metrics ──
+      if(l.trimStart().startsWith('{')){
+        try{const o=JSON.parse(l);if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'oracle.performance',namespace:'default'}};}catch{}
+      }
+      // ── Alert log (multi-line joined with \n) ──
+      if(l.includes('\nThread ')||l.includes('\nORA-')){
+        const lines=l.split('\n'),ts=lines[0],body=lines.slice(1).join(' ');
+        const oraM=body.match(/(ORA-\d{5})/);
+        const base={'@timestamp':ts,message:l,event:{dataset:'oracle.alert',module:'oracle',kind:'event',category:['database'],action:oraM?'database-error':'log-switch',outcome:oraM?'failure':'success',original:l},agent:agentField('filebeat'),data_stream:dsField('oracle.alert')};
+        if(oraM)base.error={code:oraM[1],message:body};
+        return base;
+      }
+      // ── Listener ──
+      if(l.match(/^\d{2}-[A-Z]{3}-\d{4}/)){
+        const ipM=l.match(/HOST=(\d+\.\d+\.\d+\.\d+)/),portM=l.match(/\(PORT=(\d+)\)\) \*/),svcM=l.match(/SERVICE_NAME=([^)]+)/);
+        const status=l.endsWith('* 0')?'success':'failure';
+        return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'oracle.listener',module:'oracle',kind:'event',category:['network','database'],action:'establish',outcome:status,original:l},...(ipM?{source:{ip:ipM[1],address:ipM[1],...(portM?{port:parseInt(portM[1])}:{})}}:{}),destination:{port:1521},...(svcM?{database:{instance:{name:svcM[1]}}}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.listener')};
+      }
+      // ── Audit ──
+      const tsM=l.match(/^([^\s]+\+\d{2}:\d{2})/),ts=tsM?tsM[1]:new Date().toISOString();
+      const actionM=l.match(/ACTION\s*:\[\d+\]\s+"([^"]+)"/),userM=l.match(/DATABASE USER:\[\d+\]\s+"([^"]+)"/);
+      const statusM=l.match(/STATUS:\[\d+\]\s+"([^"]+)"/),ipM=l.match(/HOST=(\d+\.\d+\.\d+\.\d+)/);
+      const dbidM=l.match(/DBID:\[\d+\]\s+"([^"]+)"/),sqlM=l.match(/SQLTEXT:\[\d+\]\s+"([^"]+)"/);
+      return{'@timestamp':ts,message:l,event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:['database'],action:(actionM?.[1]||'query').toLowerCase(),outcome:statusM?.[1]==='0'?'success':'failure',original:l},...(userM?{user:{name:userM[1]}}:{}),...(ipM?{source:{ip:ipM[1],address:ipM[1]}}:{}),...(dbidM?{database:{instance:{name:dbidM[1]}}}:{}),...(sqlM?{'oracle.audit.sql_text':sqlM[1]}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
+    },
+  },
+  mssql:{
+    getIndex(l){
+      if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);if(o.event?.kind==='metric')return'metrics-mssql.performance-default';if(o.action_id!==undefined)return'logs-mssql.audit-default';}catch{}return'logs-mssql.log-default';}
+      if(l.match(/ - [!+?I] \[/))return'logs-mssql.agent-default';
+      return'logs-mssql.log-default';
+    },
+    toDoc(l){
+      // ── Metrics / Audit (JSON) ──
+      if(l.trimStart().startsWith('{')){
+        try{
+          const o=JSON.parse(l);
+          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.performance',namespace:'default'}};
+          if(o.action_id!==undefined){
+            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'mssql.audit',module:'mssql',kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'mssql.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('mssql.audit')};
+          }
+        }catch{}
+      }
+      // ── SQL Agent ──
+      if(l.match(/ - [!+?I] \[/)){
+        const tsM=l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)/);
+        const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
+        const sev=l.includes(' - ! ')?'failure':l.includes(' - + ')?'unknown':'success';
+        const errM=l.match(/SQLServer Error: (\d+)/);
+        return{'@timestamp':ts,message:l,event:{dataset:'mssql.agent',module:'mssql',kind:'event',category:['database'],action:'sql-agent-event',outcome:sev,original:l},process:{name:'SQLAGENT'},...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.agent')};
+      }
+      // ── ERRORLOG ──
+      const tsM=l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)/);
+      const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
+      const loginM=l.match(/Login failed for user '([^']+)'.*\[CLIENT: ([^\]]+)\]/);
+      const errM=l.match(/Error: (\d+),/);
+      return{'@timestamp':ts,message:l,event:{dataset:'mssql.log',module:'mssql',kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.log')};
+    },
+  },
 };
 
 async function pushLogsToElastic(logs,indexOverrides={}){
@@ -1082,6 +1263,8 @@ const VENDORS=[
   {id:'endpoint',name:'Endpoint Telemetry',description:'EDR-style process, network, and alert events with MITRE ATT&CK',tags:['EDR','Process','MITRE','Alerts'],indices:['logs-endpoint.events.process-default','logs-endpoint.alerts-default'],generator:generateEndpointLogs},
   {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
+  {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
+  {id:'mssql',name:'Microsoft SQL Server',description:'Audit logs (JSON), ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-mssql.audit-default','logs-mssql.log-default','logs-mssql.agent-default','metrics-mssql.performance-default'],generator:generateMSSQLLogs},
 ];
 const SCENARIOS=[
   {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
@@ -1148,7 +1331,7 @@ function ConfigDialog({open,onClose,onSave}){
 
 // Vendor Card
 const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
-function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,oracleLogTypes,onOracleLogTypes,mssqlLogTypes,onMSSQLLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
@@ -1159,6 +1342,8 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
         :vendor.id==='email'?'✉️'
         :vendor.id==='endpoint'?'💻'
         :vendor.id==='windows'?'🪟'
+        :vendor.id==='oracle'?'🛢'
+        :vendor.id==='mssql'?'🗄'
         :'🐧'}
       </div>
       <h3 className="font-semibold text-sm text-white mb-0.5">{vendor.name}</h3>
@@ -1246,6 +1431,54 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
                     const cur=linuxLogTypes||LINUX_TYPES_DEFAULT;
                     const next=checked?cur.filter(x=>x!==t):[...cur,t];
                     if(next.length>0)onLinuxLogTypes(next);
+                  };
+                  return(
+                    <button key={t} type="button" onClick={toggle}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none"
+                      style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}>
+                      <span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='oracle'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(ORACLE_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(oracleLogTypes||ORACLE_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{
+                    e.stopPropagation();
+                    const cur=oracleLogTypes||ORACLE_TYPES_DEFAULT;
+                    const next=checked?cur.filter(x=>x!==t):[...cur,t];
+                    if(next.length>0)onOracleLogTypes(next);
+                  };
+                  return(
+                    <button key={t} type="button" onClick={toggle}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none"
+                      style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}>
+                      <span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='mssql'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(MSSQL_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(mssqlLogTypes||MSSQL_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{
+                    e.stopPropagation();
+                    const cur=mssqlLogTypes||MSSQL_TYPES_DEFAULT;
+                    const next=checked?cur.filter(x=>x!==t):[...cur,t];
+                    if(next.length>0)onMSSQLLogTypes(next);
                   };
                   return(
                     <button key={t} type="button" onClick={toggle}
@@ -1588,6 +1821,8 @@ export default function App(){
   const [emailDomain,setEmailDomain]=useState('');
   const [windowsLogTypes,setWindowsLogTypes]=useState(WIN_TYPES_DEFAULT);
   const [linuxLogTypes,setLinuxLogTypes]=useState(LINUX_TYPES_DEFAULT);
+  const [oracleLogTypes,setOracleLogTypes]=useState(ORACLE_TYPES_DEFAULT);
+  const [mssqlLogTypes,setMSSQLLogTypes]=useState(MSSQL_TYPES_DEFAULT);
   const [vendorHostnamePrefix,setVendorHostnamePrefix]=useState({windows:'',linux:'',endpoint:''});
   const [vendorHostnameCap,setVendorHostnameCap]=useState({windows:null,linux:null,endpoint:null});
   const [vendorIncludeAdmin,setVendorIncludeAdmin]=useState({endpoint:false,windows:false,linux:false});
@@ -1619,6 +1854,18 @@ export default function App(){
         setVendorMinLogs(p=>({...p,linux:Math.max(1,sum)}));
         return types;
       });
+    } else if(id==='oracle'){
+      setOracleLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(ORACLE_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,oracle:Math.max(1,sum)}));
+        return types;
+      });
+    } else if(id==='mssql'){
+      setMSSQLLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(MSSQL_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,mssql:Math.max(1,sum)}));
+        return types;
+      });
     } else {
       const def=VENDOR_LOG_COUNT[id]?.[lvl];
       if(def)setVendorMinLogs(p=>({...p,[id]:def}));
@@ -1639,6 +1886,24 @@ export default function App(){
       const lvl=prev.linux||'med';
       const sum=types.reduce((s,t)=>s+(LINUX_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
       setVendorMinLogs(p=>({...p,linux:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleOracleLogTypes=useCallback((types)=>{
+    setOracleLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.oracle||'med';
+      const sum=types.reduce((s,t)=>s+(ORACLE_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,oracle:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleMSSQLLogTypes=useCallback((types)=>{
+    setMSSQLLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.mssql||'med';
+      const sum=types.reduce((s,t)=>s+(MSSQL_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,mssql:Math.max(1,sum)}));
       return prev;
     });
   },[]);
@@ -1679,14 +1944,14 @@ export default function App(){
         setPool(poolSize,prefix);
         _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
         _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
-        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
+        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):vid==='oracle'?generateOracleLogs(vendorTotals[vid],parseInt(timeRange),oracleLogTypes):vid==='mssql'?generateMSSQLLogs(vendorTotals[vid],parseInt(timeRange),mssqlLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
       });
       _emailDomain=null;
       _hostnamePrefix=null;
       _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes]);
+  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
@@ -1760,7 +2025,7 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} oracleLogTypes={oracleLogTypes} onOracleLogTypes={handleOracleLogTypes} mssqlLogTypes={mssqlLogTypes} onMSSQLLogTypes={handleMSSQLLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
