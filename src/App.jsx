@@ -160,7 +160,27 @@ function generateSwitchLogs(count,tr){return generateTimestamps(count,tr).map(ts
 // ─── Email Generator ──────────────────────────────────────────────────────────
 function genExchange(ts){const verdicts=['Clean','Clean','Clean','Spam','Phish','BEC'],v=pick(verdicts),subj=v==='Clean'?pick(['Q4 Financial Report','Meeting Agenda','Weekly Status Update']):pick(['URGENT: Account Suspended','Wire Transfer Required','Verify your account']);return `${formatTimestamp(ts)},<${randomHex(8)}@${randomDomain()}>,${pick(['RECEIVE','SEND','DELIVER','QUARANTINE'])},${randomEmail()},${randomEmail()},"${subj}",${pick(['Inbound','Outbound'])},${v},${v==='Clean'?'Deliver':'Quarantine'},SCL:${v==='Clean'?rand(0,4):rand(5,9)},Size:${rand(1024,5242880)}`;}
 function genPostfix(ts){const qid=randomHex(10).toUpperCase(),status=pick(['sent','sent','deferred','reject']),hn=`mail-gw-${rand(1,5)}.${randomDomain()}`;if(status==='reject')return `${syslogTimestamp(ts)} ${hn} postfix/smtpd[${rand(1000,65000)}]: NOQUEUE: reject: RCPT from unknown[${randomIP()}]: 554 5.7.1 Relay access denied`;return `${syslogTimestamp(ts)} ${hn} postfix/smtp[${rand(1000,65000)}]: ${qid}: to=<${randomEmail()}>, relay=mx1.${randomDomain()}[${randomIP()}]:25, status=${status}`;}
-function genO365(ts){return JSON.stringify({CreationTime:formatTimestamp(ts),Operation:pick(['MailItemsAccessed','Send','MoveToDeletedItems','MailboxLogin','SearchQueryInitiatedExchange']),Workload:'Exchange',ClientIP:randomIP(),UserId:randomEmail(),ResultStatus:pick(['Succeeded','Succeeded','Failed'])});}
+function genO365(ts){
+  const r=Math.random();
+  let op,workload,extra={};
+  if(r<0.12){op='New-InboxRule';workload='Exchange';extra={Parameters:[{Name:'ForwardTo',Value:randomEmail()},{Name:'Name',Value:'Auto Forward'}]};}
+  else if(r<0.22){op='Set-Mailbox';workload='Exchange';extra={Parameters:[{Name:'ForwardingSmtpAddress',Value:'smtp:'+randomEmail()},{Name:'DeliverToMailboxAndForward',Value:'True'}]};}
+  else if(r<0.30){op='Add-MailboxPermission';workload='Exchange';extra={Parameters:[{Name:'AccessRights',Value:'FullAccess'},{Name:'User',Value:randomEmail()}]};}
+  else if(r<0.36){op='New-TransportRule';workload='Exchange';extra={Parameters:[{Name:'BlindCopyTo',Value:randomEmail()},{Name:'Name',Value:'Silent Copy'}]};}
+  else if(r<0.42){op='Set-AdminAuditLogConfig';workload='Exchange';extra={Parameters:[{Name:'UnifiedAuditLogIngestionEnabled',Value:'False'}]};}
+  else if(r<0.48){op='UpdateInboxRules';workload='Exchange';extra={RuleOperation:'Create'};}
+  else if(r<0.54){op='AnonymousLinkCreated';workload='SharePoint';extra={ObjectId:`/sites/Corp/Shared Documents/${pick(['Financial_Report.xlsx','HR_Data.csv','Passwords.xlsx','Strategy_2026.docx'])}`};}
+  else if(r<0.60){op='FileDownloaded';workload='SharePoint';extra={ObjectId:`/sites/Corp/${pick(['Confidential/Budget.xlsx','HR/Employee_List.csv','IT/Network_Diagram.pdf'])}`};}
+  else if(r<0.65){op='MailItemsAccessed';workload='Exchange';}
+  else if(r<0.72){op='Send';workload='Exchange';}
+  else if(r<0.78){op='UserLoggedIn';workload='AzureActiveDirectory';}
+  else if(r<0.83){op='UserLoginFailed';workload='AzureActiveDirectory';extra={LogonError:'InvalidPassword'};}
+  else if(r<0.88){op='MoveToDeletedItems';workload='Exchange';}
+  else if(r<0.93){op='MailboxLogin';workload='Exchange';}
+  else{op='SearchQueryInitiatedExchange';workload='Exchange';}
+  const status=extra.LogonError?'Failed':pick(['Succeeded','Succeeded','Succeeded','Failed']);
+  return JSON.stringify({CreationTime:formatTimestamp(ts),Operation:op,Workload:workload,ClientIP:randomIP(),UserId:randomEmail(),ResultStatus:status,...extra});
+}
 function generateEmailLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.4?genExchange(ts):r<0.7?genPostfix(ts):genO365(ts);});}
 
 // ─── Endpoint Generator ───────────────────────────────────────────────────────
@@ -987,11 +1007,24 @@ const VENDOR_INGEST={
         try{
           const o=JSON.parse(l);
           const userId=o.UserId||'';
+          const outcome=o.ResultStatus==='Succeeded'||o.ResultStatus==='Success'?'success':'failure';
+          const category=o.Workload==='SharePoint'?['file']:o.Workload==='AzureActiveDirectory'?['authentication','iam']:['email'];
           return{
             '@timestamp':o.CreationTime||new Date().toISOString(),message:l,
-            event:{dataset:'o365.audit',module:'o365',kind:'event',action:o.Operation,category:['email'],outcome:o.ResultStatus==='Succeeded'?'success':'failure',original:l},
+            event:{dataset:'o365.audit',module:'o365',kind:'event',action:o.Operation,category,outcome,original:l},
             user:{name:userId,email:userId},
             source:{ip:o.ClientIP,address:o.ClientIP},
+            o365:{audit:{
+              Operation:o.Operation,
+              Workload:o.Workload,
+              UserId:userId,
+              ClientIP:o.ClientIP,
+              ResultStatus:o.ResultStatus,
+              ...(o.ObjectId?{ObjectId:o.ObjectId}:{}),
+              ...(o.Parameters?{Parameters:o.Parameters}:{}),
+              ...(o.RuleOperation?{RuleOperation:o.RuleOperation}:{}),
+              ...(o.LogonError?{LogonError:o.LogonError}:{}),
+            }},
             agent:agentField('filebeat'),data_stream:dsField('o365.audit'),
           };
         }catch{}
