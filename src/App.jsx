@@ -350,9 +350,11 @@ const MSSQL_TABLES=['dbo.Employees','dbo.Orders','dbo.Customers','dbo.SalesHisto
 const MSSQL_ERROR_CODES={18456:'Login failed for user',208:'Invalid object name',547:'Constraint violation',1205:'Transaction was deadlocked',8152:'String or binary data would be truncated'};
 const MSSQL_AUDIT_ACTIONS=['SL','IN','UP','DL','EX','AU','LO'];
 const MSSQL_AUDIT_ACTION_LABELS={SL:'SELECT',IN:'INSERT',UP:'UPDATE',DL:'DELETE',EX:'EXECUTE',AU:'AUDIT_CHANGE',LO:'LOGOUT'};
-const MSSQL_TYPE_LOG_COUNT={audit:{low:25,med:80,high:250},errorlog:{low:25,med:80,high:250},agent:{low:15,med:40,high:150},metrics:{low:10,med:30,high:100}};
-const MSSQL_TYPES_DEFAULT=['audit','errorlog','agent','metrics'];
-const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',agent:'SQL Agent',metrics:'Metrics'};
+const MSSQL_TYPE_LOG_COUNT={audit:{low:25,med:80,high:250},errorlog:{low:25,med:80,high:250},translog:{low:30,med:100,high:300},agent:{low:15,med:40,high:150},metrics:{low:10,med:30,high:100}};
+const MSSQL_TYPES_DEFAULT=['audit','errorlog','translog','agent','metrics'];
+const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',translog:'Transaction Log',agent:'SQL Agent',metrics:'Metrics'};
+const MSSQL_LOG_OPS=['LOP_BEGIN_XACT','LOP_COMMIT_XACT','LOP_ABORT_XACT','LOP_INSERT_ROWS','LOP_MODIFY_ROW','LOP_DELETE_ROWS','LOP_BEGIN_CKPT','LOP_END_CKPT','LOP_SHRINK_NOOP','LOP_LOCK_XACT'];
+const MSSQL_LOG_CONTEXTS=['LCX_HEAP','LCX_CLUSTERED','LCX_NONCLUSTERED','LCX_IAM','LCX_PFS','LCX_GAM','LCX_SGAM','LCX_BOOT_PAGE','LCX_NULL'];
 const mssqlTs=d=>{const dt=d.toISOString().split('T')[0];const hh=String(d.getUTCHours()).padStart(2,'0');const mm=String(d.getUTCMinutes()).padStart(2,'0');const ss=String(d.getUTCSeconds()).padStart(2,'0');const cs=String(Math.floor(d.getUTCMilliseconds()/10)).padStart(2,'0');return`${dt} ${hh}:${mm}:${ss}.${cs}`;};
 
 function genSSH(ts){
@@ -492,18 +494,28 @@ function genMSSQLAgent(ts){
   if(r<0.82){const job=pick(['DailyBackup','WeeklyIndex','HourlyETL','NightlyStats','LogShipping']),ok=Math.random()>0.15;return`${mssqlTs(ts)} - ${ok?'+':'!'} [208] Job '${job}' ${ok?'succeeded':'failed'}.`;}
   return`${mssqlTs(ts)} - ? [098] SQLServerAgent terminated (normally)`;
 }
+function genMSSQLTransactionLog(ts){
+  const db=pick(MSSQL_DATABASES),op=pick(MSSQL_LOG_OPS),ctx=pick(MSSQL_LOG_CONTEXTS);
+  const table=pick(MSSQL_TABLES),user=pick(MSSQL_USERS),spid=rand(1,255);
+  const lsn=`${rand(10000,99999)}:${rand(1000,9999)}:${String(rand(1,999)).padStart(3,'0')}`;
+  const xid=`0x${Math.floor(Math.random()*0xffffffff).toString(16).padStart(8,'0')}`;
+  const txname=op==='LOP_BEGIN_XACT'?pick(['INSERT','UPDATE','DELETE','user_transaction']):'';
+  const recoveryModel=pick(['FULL','BULK_LOGGED','SIMPLE']);
+  const totalSize=rand(67108864,2147483648),usedSize=Math.floor(totalSize*Math.random()*0.8);
+  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),microsoft_sqlserver:{transaction_log:{database_name:db,operation:op,context:ctx,transaction_id:xid,lsn,transaction_name:txname,object_name:table,user_name:user,spid,log_record_length:rand(60,8000),recovery_model:recoveryModel,total_log_size_bytes:totalSize,used_log_space_bytes:usedSize,used_log_space_pct:+((usedSize/totalSize)*100).toFixed(1),log_since_last_checkpoint_bytes:rand(0,usedSize),log_since_last_log_backup_bytes:rand(0,usedSize),active_log_size_bytes:rand(0,usedSize)}},event:{dataset:'microsoft_sqlserver.transaction_log',module:'microsoft_sqlserver',kind:'event'}});
+}
 function genMSSQLMetrics(ts){
   const host=pick(MSSQL_HOSTS);
-  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{performance:{batch_requests_per_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),full_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864),cpu_usage_pct:rand(1,95)}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
+  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},microsoft_sqlserver:{performance:{batch_requests_per_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),full_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864),cpu_usage_pct:rand(1,95)}},event:{dataset:'microsoft_sqlserver.performance',module:'microsoft_sqlserver',kind:'metric'}});
 }
 function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
   const active=types.length?types:MSSQL_TYPES_DEFAULT;
-  const W={audit:30,errorlog:35,agent:20,metrics:15};
+  const W={audit:20,errorlog:25,translog:30,agent:15,metrics:10};
   const filtered=Object.entries(W).filter(([t])=>active.includes(t));
   const total=filtered.reduce((s,[,w])=>s+w,0);
   return generateTimestamps(count,tr).map(ts=>{
     let r=Math.random()*total,cum=0;
-    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genMSSQLAudit(ts):t==='errorlog'?genMSSQLErrorLog(ts):t==='agent'?genMSSQLAgent(ts):genMSSQLMetrics(ts);}
+    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genMSSQLAudit(ts):t==='errorlog'?genMSSQLErrorLog(ts):t==='translog'?genMSSQLTransactionLog(ts):t==='agent'?genMSSQLAgent(ts):genMSSQLMetrics(ts);}
     return genMSSQLMetrics(ts);
   });
 }
@@ -1210,18 +1222,31 @@ const VENDOR_INGEST={
   },
   mssql:{
     getIndex(l){
-      if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);if(o.event?.kind==='metric')return'metrics-mssql.performance-default';if(o.action_id!==undefined)return'logs-mssql.audit-default';}catch{}return'logs-mssql.log-default';}
-      if(l.match(/ - [!+?I] \[/))return'logs-mssql.agent-default';
-      return'logs-mssql.log-default';
-    },
-    toDoc(l){
-      // ── Metrics / Audit (JSON) ──
       if(l.trimStart().startsWith('{')){
         try{
           const o=JSON.parse(l);
-          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'mssql.performance',namespace:'default'}};
+          if(o.log_type==='transaction_log')return'logs-microsoft_sqlserver.transaction_log-default';
+          if(o.event?.kind==='metric')return'metrics-microsoft_sqlserver.performance-default';
+          if(o.action_id!==undefined)return'logs-microsoft_sqlserver.audit-default';
+        }catch{}
+        return'logs-microsoft_sqlserver.log-default';
+      }
+      if(l.match(/ - [!+?I] \[/))return'logs-microsoft_sqlserver.agent-default';
+      return'logs-microsoft_sqlserver.log-default';
+    },
+    toDoc(l){
+      const mod='microsoft_sqlserver';
+      // ── Transaction Log / Metrics / Audit (JSON) ──
+      if(l.trimStart().startsWith('{')){
+        try{
+          const o=JSON.parse(l);
+          if(o.log_type==='transaction_log'){
+            const tl=o.microsoft_sqlserver?.transaction_log||{};
+            return{'@timestamp':o['@timestamp']||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.transaction_log',module:mod,kind:'event',category:['database'],action:(tl.operation||'').toLowerCase(),outcome:'success',original:l},database:{instance:{name:tl.database_name}},...(tl.user_name?{user:{name:tl.user_name}}:{}),microsoft_sqlserver:{transaction_log:tl},agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.transaction_log')};
+          }
+          if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'microsoft_sqlserver.performance',namespace:'default'}};
           if(o.action_id!==undefined){
-            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'mssql.audit',module:'mssql',kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'mssql.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('mssql.audit')};
+            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.audit',module:mod,kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'microsoft_sqlserver.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.audit')};
           }
         }catch{}
       }
@@ -1231,14 +1256,14 @@ const VENDOR_INGEST={
         const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
         const sev=l.includes(' - ! ')?'failure':l.includes(' - + ')?'unknown':'success';
         const errM=l.match(/SQLServer Error: (\d+)/);
-        return{'@timestamp':ts,message:l,event:{dataset:'mssql.agent',module:'mssql',kind:'event',category:['database'],action:'sql-agent-event',outcome:sev,original:l},process:{name:'SQLAGENT'},...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.agent')};
+        return{'@timestamp':ts,message:l,event:{dataset:'microsoft_sqlserver.agent',module:mod,kind:'event',category:['database'],action:'sql-agent-event',outcome:sev,original:l},process:{name:'SQLAGENT'},...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.agent')};
       }
       // ── ERRORLOG ──
       const tsM=l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)/);
       const ts=tsM?new Date(tsM[1].replace(' ','T')+'Z').toISOString():new Date().toISOString();
       const loginM=l.match(/Login failed for user '([^']+)'.*\[CLIENT: ([^\]]+)\]/);
       const errM=l.match(/Error: (\d+),/);
-      return{'@timestamp':ts,message:l,event:{dataset:'mssql.log',module:'mssql',kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('mssql.log')};
+      return{'@timestamp':ts,message:l,event:{dataset:'microsoft_sqlserver.log',module:mod,kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.log')};
     },
   },
 };
@@ -1264,7 +1289,7 @@ const VENDORS=[
   {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
   {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
-  {id:'mssql',name:'Microsoft SQL Server',description:'Audit logs (JSON), ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-mssql.audit-default','logs-mssql.log-default','logs-mssql.agent-default','metrics-mssql.performance-default'],generator:generateMSSQLLogs},
+  {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['logs-microsoft_sqlserver.audit-default','logs-microsoft_sqlserver.transaction_log-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default','metrics-microsoft_sqlserver.performance-default'],generator:generateMSSQLLogs},
 ];
 const SCENARIOS=[
   {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
