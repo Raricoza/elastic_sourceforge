@@ -492,17 +492,19 @@ function genMSSQLAgent(ts){
   if(r<0.82){const job=pick(['DailyBackup','WeeklyIndex','HourlyETL','NightlyStats','LogShipping']),ok=Math.random()>0.15;return`${mssqlTs(ts)} - ${ok?'+':'!'} [208] Job '${job}' ${ok?'succeeded':'failed'}.`;}
   return`${mssqlTs(ts)} - ? [098] SQLServerAgent terminated (normally)`;
 }
-function genMSSQLTransactionLog(ts){
+// TSDB data streams only accept timestamps within ~2h of now — always generate fresh
+const tsdbNow=()=>new Date(Date.now()-rand(0,90*60*1000));
+function genMSSQLTransactionLog(_ts){
   const db=pick(MSSQL_DATABASES),host=pick(MSSQL_HOSTS);
+  const ts=tsdbNow(); // override batch ts — TSDB rejects historical timestamps
   const totalSize=rand(67108864,2147483648);
   const usedSize=Math.floor(totalSize*(Math.random()*0.8+0.05));
-  const pct=+((usedSize/totalSize)*100).toFixed(2);
-  const activeVlf=rand(4,128);
-  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{database_name:db,total_log_size:{bytes:totalSize},used_log_space:{bytes:usedSize,pct},active_size:{bytes:Math.floor(usedSize*0.3)},active_vlf_count:activeVlf,log_since_last:{checkpoint:{bytes:rand(0,Math.floor(usedSize*0.5))},backup:{bytes:rand(0,usedSize),date:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},log_recovery_size:{bytes:rand(0,usedSize)}}},event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'}});
+  return JSON.stringify({log_type:'transaction_log','@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{server_name:host,instance_name:'MSSQLSERVER',database_name:db,database_id:rand(1,100),total_log_size_bytes:totalSize,total_log_size:totalSize,used_log_space_bytes:usedSize,used_log_space_pct:+((usedSize/totalSize)*100).toFixed(2),active_log_size:Math.floor(usedSize*0.3),active_vlf_count:rand(4,128),log_since_last_checkpoint:rand(0,Math.floor(usedSize*0.5)),log_since_last_log_backup:rand(0,usedSize),log_space_in_bytes_since_last_backup:rand(0,usedSize),log_recovery_size:rand(0,usedSize),log_backup_time:new Date(ts.getTime()-rand(0,3600000)).toISOString()}},event:{dataset:'mssql.transaction_log',module:'mssql',kind:'metric'}});
 }
-function genMSSQLMetrics(ts){
+function genMSSQLMetrics(_ts){
   const host=pick(MSSQL_HOSTS);
-  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory:{kb:rand(2097152,67108864)},total_server_memory:{kb:rand(1048576,67108864)}}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
+  const ts=tsdbNow();
+  return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{server_name:host,instance_name:'MSSQLSERVER',batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864)}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
 }
 function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
   const active=types.length?types:MSSQL_TYPES_DEFAULT;
