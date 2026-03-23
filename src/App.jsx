@@ -1720,7 +1720,7 @@ const VENDOR_INGEST={
     toDoc(l){
       // ── Metrics ──
       if(l.trimStart().startsWith('{')){
-        try{const o=JSON.parse(l);if(o.event?.kind==='metric')return{...o,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'oracle.performance',namespace:'default'}};}catch{}
+        try{const o=JSON.parse(l);if(o.event?.kind==='metric'){const{module:_m,...evt}=o.event||{};return{...o,event:evt,agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:'oracle.performance',namespace:'default'}};}}catch{}
       }
       // ── Alert log (multi-line joined with \n) ──
       if(l.includes('\nThread ')||l.includes('\nORA-')){
