@@ -548,7 +548,7 @@ function genOracleAlert(ts){
   return`${line1}\nThread 1 advanced to log sequence ${seq} (LGWR switch)\n  Current log# ${logNum} seq# ${seq} mem# 0: /u01/app/oracle/oradata/ORCL/redo0${logNum}.log`;
 }
 function genOracleListener(ts){
-  const clientIp=randomIP(),svc=pick(ORACLE_SERVICE_NAMES),host=pick(ORACLE_HOSTS),port=rand(1024,65535);
+  const clientIp=randomIP(),svc=pick(ORACLE_SERVICE_NAMES),port=rand(1024,65535);
   const prog=pick(['JDBC Thin Client','OCI','SQL*Plus','Python cx_Oracle','node-oracledb']);
   const status=Math.random()<0.05?'12514':'0';
   return`${oracleListenerTs(ts)} * (CONNECT_DATA=(SERVER=DEDICATED)(SERVICE_NAME=${svc})(CID=(PROGRAM=${prog})(HOST=${clientIp})(USER=oracle))) * (ADDRESS=(PROTOCOL=tcp)(HOST=${clientIp})(PORT=${port})) * establish * ${svc} * ${status}`;
@@ -1714,9 +1714,7 @@ const VENDOR_INGEST={
   },
   oracle:{
     getIndex(l){
-      if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);if(o.event?.kind==='metric')return'metrics-oracle.performance-default';}catch{}return'logs-oracle.audit-default';}
-      if(l.includes('\nThread ')||l.includes('\nORA-'))return'logs-oracle.database_audit-default';
-      if(l.match(/^\d{2}-[A-Z]{3}-\d{4}/))return'logs-oracle.listener-default';
+      if(l.trimStart().startsWith('{')){try{const o=JSON.parse(l);if(o.event?.kind==='metric')return'metrics-oracle.performance-default';}catch{}}
       return'logs-oracle.audit-default';
     },
     toDoc(l){
@@ -1726,24 +1724,38 @@ const VENDOR_INGEST={
       }
       // ── Alert log (multi-line joined with \n) ──
       if(l.includes('\nThread ')||l.includes('\nORA-')){
-        const lines=l.split('\n'),ts=lines[0],body=lines.slice(1).join(' ');
+        const lines=l.split('\n'),ts=lines[0]||new Date().toISOString(),body=lines.slice(1).join(' ');
         const oraM=body.match(/(ORA-\d{5})/);
-        const base={'@timestamp':ts,message:l,event:{dataset:'oracle.alert',module:'oracle',kind:'event',category:['database'],action:oraM?'database-error':'log-switch',outcome:oraM?'failure':'success',original:l},agent:agentField('filebeat'),data_stream:dsField('oracle.alert')};
-        if(oraM)base.error={code:oraM[1],message:body};
-        return base;
+        const doc={'@timestamp':ts,message:l,
+          event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:['database'],action:oraM?'database-error':'log-switch',outcome:oraM?'failure':'success',original:l},
+          oracle:{audit:{db_user:'SYSTEM',userhost:'oracle-db-internal',privilege:'SYSDBA',return_code:oraM?oraM[1]:'0',statement_type:'INTERNAL',length:'200',session_id:String(rand(1000,99999))}},
+          agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
+        if(oraM)doc.error={code:oraM[1],message:body};
+        return doc;
       }
-      // ── Listener ──
+      // ── Listener → oracle.audit dataset ──
       if(l.match(/^\d{2}-[A-Z]{3}-\d{4}/)){
         const ipM=l.match(/HOST=(\d+\.\d+\.\d+\.\d+)/),portM=l.match(/\(PORT=(\d+)\)\) \*/),svcM=l.match(/SERVICE_NAME=([^)]+)/);
         const status=l.endsWith('* 0')?'success':'failure';
-        return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'oracle.listener',module:'oracle',kind:'event',category:['network','database'],action:'establish',outcome:status,original:l},...(ipM?{source:{ip:ipM[1],address:ipM[1],...(portM?{port:parseInt(portM[1])}:{})}}:{}),destination:{port:1521},...(svcM?{database:{instance:{name:svcM[1]}}}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.listener')};
+        const clientIp=ipM?ipM[1]:'';
+        return{'@timestamp':new Date().toISOString(),message:l,
+          event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:['network','database'],action:'connect',outcome:status,original:l},
+          oracle:{audit:{db_user:'',userhost:clientIp,privilege:'NONE',return_code:status==='success'?'0':'12170',statement_type:'CONNECT',length:'200',session_id:String(rand(1000,99999)),client:{user:'oracle',address:clientIp},entity:{name:svcM?svcM[1]:''}}},
+          ...(clientIp?{source:{ip:clientIp,address:clientIp,...(portM?{port:parseInt(portM[1])}:{})}}:{}),
+          destination:{port:1521},
+          agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
       }
-      // ── Audit ──
+      // ── Audit (all types including security events) ──
       const tsM=l.match(/^([^\s]+\+\d{2}:\d{2})/),ts=tsM?tsM[1]:new Date().toISOString();
       const actionM=l.match(/ACTION\s*:\[\d+\]\s+"([^"]+)"/),userM=l.match(/DATABASE USER:\[\d+\]\s+"([^"]+)"/);
       const statusM=l.match(/STATUS:\[\d+\]\s+"([^"]+)"/),ipM=l.match(/HOST=(\d+\.\d+\.\d+\.\d+)/);
       const dbidM=l.match(/DBID:\[\d+\]\s+"([^"]+)"/),sqlM=l.match(/SQLTEXT:\[\d+\]\s+"([^"]+)"/);
-      const sql=sqlM?.[1]||'';
+      const hosthostM=l.match(/USERHOST:\[\d+\]\s+"([^"]+)"/),clientUserM=l.match(/CLIENT USER:\[\d+\]\s+"([^"]+)"/);
+      const privM=l.match(/PRIVILEGE\s*:\[\d+\]\s+"([^"]+)"/);
+      const sql=sqlM?.[1]||'',action=actionM?.[1]||'',returnCode=statusM?.[1]||'0';
+      const stmtVerb=sql.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|GRANT|CREATE|DROP|ALTER|EXECUTE|TRUNCATE|CALL)/i);
+      const stmtType=stmtVerb?stmtVerb[1].toUpperCase():action.split(' ')[0].toUpperCase()||'SELECT';
+      const entityName=sql.match(/(?:FROM|TABLE|INTO|UPDATE)\s+(\S+)/i)?.[1]?.replace(/[()]/g,'')||'';
       const isInjection=sql.match(/UNION\s+SELECT|OR\s+'?1'?='?1|--\s*$/i);
       const isRecon=sql.match(/DBA_USERS|V\$SESSION|DBA_ROLE_PRIVS|DBA_SYS_PRIVS|DBA_OBJECTS/i);
       const isPrivEsc=sql.match(/GRANT\s+DBA|GRANT\s+EXECUTE\s+ON\s+UTL|DBMS_SCHEDULER\.CREATE_JOB/i);
@@ -1758,7 +1770,14 @@ const VENDOR_INGEST={
       else if(isRecon){cats.push('discovery');tactic='Discovery';technique='Permission Groups Discovery';}
       else if(isLateral){cats.push('lateral_movement');tactic='Lateral Movement';technique='Remote Services';}
       else if(isTamper){cats.push('defense_evasion');tactic='Defense Evasion';technique='Indicator Removal';}
-      return{'@timestamp':ts,message:l,event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:cats,action:(actionM?.[1]||'query').toLowerCase(),outcome:statusM?.[1]==='0'?'success':'failure',severity:isInjection||isExfil||isPrivEsc?73:isRecon||isLateral||isTamper?47:21,original:l},...(userM?{user:{name:userM[1]}}:{}),...(ipM?{source:{ip:ipM[1],address:ipM[1]}}:{}),...(dbidM?{database:{instance:{name:dbidM[1]}}}:{}),...(sql?{'oracle.audit.sql_text':sql}:{}),...(tactic?{threat:{framework:'MITRE ATT&CK',tactic:{name:tactic},technique:{name:technique}}}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
+      return{'@timestamp':ts,message:l,
+        event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:cats,action:action.toLowerCase()||'query',outcome:returnCode==='0'?'success':'failure',severity:isInjection||isExfil||isPrivEsc?73:isRecon||isLateral||isTamper?47:21,original:l},
+        oracle:{audit:{db_user:userM?.[1]||'',userhost:hosthostM?.[1]||'',privilege:privM?.[1]||'NONE',return_code:returnCode,statement_type:stmtType,sql_text:sql,length:'200',session_id:String(rand(1000,99999)),...(dbidM?{db_id:dbidM[1]}:{}),...(clientUserM?{client:{user:clientUserM[1],address:ipM?.[1]||''}}:{}),...(entityName?{entity:{name:entityName}}:{})}},
+        ...(userM?{user:{name:userM[1]}}:{}),
+        ...(ipM?{source:{ip:ipM[1],address:ipM[1]}}:{}),
+        ...(dbidM?{database:{instance:{name:dbidM[1]}}}:{}),
+        ...(tactic?{threat:{framework:'MITRE ATT&CK',tactic:{name:tactic},technique:{name:technique}}}:{}),
+        agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
     },
   },
   mssql:{
@@ -1972,7 +1991,7 @@ async function pushLogsToElastic(logs,indexOverrides={}){
   const errs=errItems.length;
   // Group errors by index so we can see which indices are failing
   const errByIndex={};
-  errItems.forEach((item,i)=>{
+  errItems.forEach((item)=>{
     const op=item.create||item.index;
     const idx=op._index||'unknown';
     const e=op.error;
@@ -1993,7 +2012,7 @@ const VENDORS=[
   {id:'endpoint',name:'Endpoint Telemetry',description:'EDR-style process, network, and alert events with MITRE ATT&CK',tags:['EDR','Process','MITRE','Alerts'],indices:['logs-endpoint.events.process-default','logs-endpoint.alerts-default'],generator:generateEndpointLogs},
   {id:'windows',name:'Windows Events',description:'Security (4624/4625), Application, System, AppLocker and PowerShell event logs via winlogbeat',tags:['Security','PowerShell','Logon','AppLocker'],indices:['logs-windows.security-default','logs-windows.application-default','logs-windows.system-default','logs-windows.powershell_operational-default','logs-windows.applocker-default'],generator:generateWindowsEventLogs},
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
-  {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
+  {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
   {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['metrics-microsoft_sqlserver.transaction_log-default','metrics-microsoft_sqlserver.performance-default','logs-microsoft_sqlserver.audit-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default'],generator:generateMSSQLLogs},
   {id:'cloudtrail',name:'AWS CloudTrail',description:'Management, IAM, S3 data, and security-relevant API events across AWS services',tags:['AWS','CloudTrail','IAM','S3'],indices:['logs-aws.cloudtrail-default'],generator:generateCloudTrailLogs},
   {id:'okta',name:'Okta',description:'Authentication, user lifecycle, policy changes, and application provisioning events',tags:['Identity','SSO','MFA','IAM'],indices:['logs-okta.system-default'],generator:generateOktaLogs},
