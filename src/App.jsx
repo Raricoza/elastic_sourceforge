@@ -2923,8 +2923,8 @@ export default function App(){
                       <label className="text-xs text-gray-400">Max Total Logs</label>
                       <span className="text-sm font-mono font-semibold text-white">{maxLogs.toLocaleString()}</span>
                     </div>
-                    <input type="number" min="1" max="10000" step="10" value={maxLogs} onChange={e=>setMaxLogs(Math.min(10000,Math.max(1,Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
-                    {(()=>{const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);return(<div className="flex justify-between text-[10px] text-gray-500"><span>min guaranteed: <span className={sum>maxLogs?'text-amber-400 font-semibold':''}>{sum.toLocaleString()}</span></span><span>max 10,000</span></div>);})()}
+                    <input type="number" min="1" max="100000" step="100" value={maxLogs} onChange={e=>setMaxLogs(Math.min(100000,Math.max(1,Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+                    {(()=>{const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);return(<div className="flex justify-between text-[10px] text-gray-500"><span>min guaranteed: <span className={sum>maxLogs?'text-amber-400 font-semibold':''}>{sum.toLocaleString()}</span></span><span>max 100,000</span></div>);})()}
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-xs text-gray-400">Time Range</label>
