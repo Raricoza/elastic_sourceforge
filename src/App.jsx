@@ -238,7 +238,7 @@ function generateEndpointLogs(count,tr){return generateTimestamps(count,tr).map(
 
 // ─── Windows Event Generator ──────────────────────────────────────────────────
 function genWinSecurity(ts){
-  const isFailure=Math.random()<0.2,eid=isFailure?4625:4624;
+  const isFailure=Math.random()<0.04,eid=isFailure?4625:4624;
   const user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase(),hn=randomHostname();
   return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,LogonType:String(pick([2,3,7,10])),AuthenticationPackageName:pick(['NTLM','Kerberos']),IpAddress:randomIP(),...(isFailure?{Status:pick(['0xC000006A','0xC0000064']),SubStatus:'0x0'}:{SubjectUserName:'-',SubjectDomainName:'-'})}},event:{code:String(eid),action:isFailure?'logon-failed':'logged-in',category:['authentication'],outcome:isFailure?'failure':'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
 }
@@ -260,26 +260,26 @@ function genWinAccountMgmt(ts){
 function genWinSecurityExtra(ts){
   const r=Math.random();
   const hn=randomHostname(),user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
-  if(r<0.14){
+  if(r<0.18){
     // 4648 - Explicit credential logon (RunAs / lateral movement)
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4648,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:randomUser(),SubjectDomainName:domain,TargetUserName:user,TargetDomainName:domain,TargetServerName:randomHostname(),ProcessName:`C:\\Windows\\System32\\${pick(['runas.exe','cmd.exe','powershell.exe'])}`}},event:{code:'4648',action:'explicit-credentials-logon',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
-  }else if(r<0.28){
+  }else if(r<0.34){
     // 4672 - Special privileges assigned (SeDebugPrivilege indicates potential LSASS access)
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4672,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,SubjectLogonId:`0x${randomHex(8)}`,PrivilegeList:pick(['SeDebugPrivilege\nSeImpersonatePrivilege','SeTcbPrivilege\nSeAssignPrimaryTokenPrivilege','SeBackupPrivilege\nSeRestorePrivilege'])}},event:{code:'4672',action:'special-privileges-logon',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
-  }else if(r<0.42){
+  }else if(r<0.50){
     // 4697 - Service installed (persistence rule trigger)
     const svc=pick(['WindowsUpdate32','TelemetryHub','DiagnosticsAgent','winsrv64','svchost_upd']);
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4697,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,ServiceName:svc,ServiceFileName:pick([`C:\\Windows\\Temp\\${svc}.exe`,`C:\\ProgramData\\${svc}\\${svc}.dll`,`%SYSTEMROOT%\\system32\\${svc}.exe`]),ServiceType:'0x10',ServiceStartType:'2',ServiceAccount:'LocalSystem'}},event:{code:'4697',action:'service-installed',category:['process'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
-  }else if(r<0.57){
+  }else if(r<0.66){
     // 4698/4702 - Scheduled task created or modified (persistence)
     const eid=Math.random()<0.7?4698:4702;
     const task=pick(['UpdateCheck','TelemetryAgent','MaintenanceRun','schtask_persist','SystemCleanup']);
     const cmd=pick(['C:\\Windows\\Temp\\update.exe','powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBkAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAn','cmd /c net user admin$ /add','wscript.exe C:\\ProgramData\\evil.vbs','%SYSTEMROOT%\\system32\\cmd.exe /c whoami /all > C:\\temp\\info.txt']);
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,TaskName:`\\Microsoft\\Windows\\${task}`,TaskContent:`<Task><Actions><Exec><Command>${cmd}</Command></Exec></Actions></Task>`}},event:{code:String(eid),action:eid===4698?'scheduled-task-created':'scheduled-task-modified',category:['process'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
-  }else if(r<0.67){
+  }else if(r<0.74){
     // 1102 - Security audit log cleared (defence evasion)
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:1102,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{SubjectUserName:user,SubjectDomainName:domain,SubjectLogonId:`0x${randomHex(8)}`}},event:{code:'1102',action:'audit-log-cleared',category:['configuration'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
-  }else if(r<0.84){
+  }else if(r<0.94){
     // 4769 - Kerberos service ticket request with RC4 (0x17) = Kerberoasting indicator
     const spn=pick(['MSSQLSvc/sql-prod-01.corp.local:1433','HTTP/webapp.corp.local:80','HOST/dc01.corp.local','CIFS/fileserver.corp.local']);
     return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:4769,channel:"Security",computer_name:`${hn}.${randomDomain()}`,provider_name:"Microsoft-Windows-Security-Auditing",record_id:rand(10000,9999999),event_data:{TargetUserName:user,TargetDomainName:domain,ServiceName:spn,TicketEncryptionType:'0x17',TicketOptions:'0x40810000',IpAddress:randomIP(),Status:'0x0'}},event:{code:'4769',action:'kerberos-service-ticket-requested',category:['authentication'],outcome:'success',kind:'event'},host:{name:hn,hostname:hn},user:{name:user,domain}});
@@ -1043,12 +1043,12 @@ function genWDNSQuery(ts){
 }
 function genWDNSKerberos(ts){
   const dc=`${pick(AD_DC_HOSTS)}.${adDomain()}`,user=randomUser(),domain=adDomain().split('.')[0].toUpperCase();
-  const eid=pick([4768,4768,4769,4769,4771,4776]);
+  const eid=pick([4768,4768,4768,4769,4769,4769,4771,4776]);
   let evtData,action,outcome;
   if(eid===4768){evtData={TargetUserName:user,TargetDomainName:domain,ServiceName:'krbtgt',TicketEncryptionType:pick(['0x12','0x17','0x11']),TicketOptions:'0x40810010',Status:'0x0',IpAddress:randomIP()};action='kerberos-tgt-request';outcome='success';}
   else if(eid===4769){evtData={TargetUserName:user,TargetDomainName:domain,ServiceName:pick([`MSSQLSvc/sql-prod-01.${adDomain()}:1433`,`HTTP/webapp.${adDomain()}:80`,`HOST/dc01.${adDomain()}`,`CIFS/fileserver.${adDomain()}`]),TicketEncryptionType:'0x17',TicketOptions:'0x40810000',Status:'0x0',IpAddress:randomIP()};action='kerberos-service-ticket-requested';outcome='success';}
   else if(eid===4771){evtData={TargetUserName:user,PreAuthType:'2',Status:pick(['0x12','0x18','0x6']),IpAddress:randomIP()};action='kerberos-preauth-failed';outcome='failure';}
-  else{evtData={TargetUserName:user,TargetDomainName:domain,Status:pick(['0x0','0xC000006A','0xC0000064']),WorkstationName:randomHostname(),LogonType:'3'};action='ntlm-auth';outcome=evtData.Status==='0x0'?'success':'failure';}
+  else{evtData={TargetUserName:user,TargetDomainName:domain,Status:pick(['0x0','0x0','0x0','0xC000006A','0xC0000064']),WorkstationName:randomHostname(),LogonType:'3'};action='ntlm-auth';outcome=evtData.Status==='0x0'?'success':'failure';}
   return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:eid,channel:'Security',computer_name:dc,provider_name:'Microsoft-Windows-Security-Auditing',record_id:rand(10000,9999999),event_data:evtData},event:{code:String(eid),action,category:['authentication'],outcome,kind:'event'},host:{name:dc.split('.')[0],hostname:dc},user:{name:user,domain}});
 }
 function genWDNSLDAP(ts){
