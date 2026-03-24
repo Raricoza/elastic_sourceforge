@@ -16,6 +16,31 @@ let _pool = null;
 let _emailDomain = null;
 let _hostnamePrefix = null;
 let _includeAdminUsers = false;
+// ─── Attack Correlation State ─────────────────────────────────────────────────
+// Seeded once per generation run so DNS queries and firewall logs share the same
+// source IPs and resolved C2 IPs, letting Attack Discovery correlate them.
+let _attackCorrelations = [];
+const _C2_ATTACK_DOMAINS = [
+  'update-cdn.evil-corp.io','telemetry.malwarehost.net','beacon.c2panel.xyz',
+  'api.stealth-c2.com','sync.darkhotel.net','cdn.apt-infra.io',
+  'update.fakemicrosoft.net','analytics.spyware-c2.xyz',
+  'exfil.data-stealer.net','heartbeat.c2relay.xyz',
+  'loader.malicious-cdn.net','patch.windowsupdate-cdn.com',
+];
+function seedAttackCorrelations(n=8){
+  _attackCorrelations=Array.from({length:n},(_,i)=>{
+    const c2IP=randomIP();
+    return{
+      srcHost:`WS-${randomHex(4).toUpperCase()}`,
+      srcIP:randomPrivateIP(),
+      c2Domain:_C2_ATTACK_DOMAINS[i%_C2_ATTACK_DOMAINS.length],
+      c2IP,
+      c2Port:pick([80,443,8080,8443,4444,1337]),
+      process:pick(['chrome.exe','svchost.exe','powershell.exe','rundll32.exe','wscript.exe','mshta.exe']),
+    };
+  });
+}
+function pickCorr(){return _attackCorrelations.length?_attackCorrelations[Math.floor(Math.random()*_attackCorrelations.length)]:null;}
 function setPool(size, prefix=null) {
   if (size === null) { _pool = null; return; }
   const hSize = Math.max(2, size);
@@ -94,7 +119,13 @@ function genFortiTraffic(ts) {
   const policies=['allow-outbound','deny-inbound','dmz-access','vpn-traffic','web-filter','ips-block'];
   const apps=['Google.Chrome','Microsoft.Outlook','Slack','Zoom','Dropbox','SSH','RDP'];
   const hn=`FGT-${pick(['DC','EDGE','CORE'])}-${rand(1,5)}`;
-  return `date=${ts.toISOString().split('T')[0]} time=${ts.toTimeString().split(' ')[0]} devname="${hn}" eventtime=${Math.floor(ts/1000)} logid="000001${rand(1000,9999)}" type="traffic" subtype="forward" level="notice" srcip=${randomPrivateIP()} srcport=${randomHighPort()} dstip=${randomIP()} dstport=${randomPort()} action="${pick(actions)}" policyname="${pick(policies)}" service="${pick(services)}" sentbyte=${rand(64,1500000)} rcvdbyte=${rand(64,2500000)} app="${pick(apps)}"`;
+  const corr=Math.random()<0.08?pickCorr():null;
+  const srcip=corr?corr.srcIP:randomPrivateIP();
+  const dstip=corr?corr.c2IP:randomIP();
+  const dstport=corr?corr.c2Port:randomPort();
+  const action=corr?pick(['accept','accept','deny']):pick(actions);
+  const hostnameField=corr?` hostname="${corr.c2Domain}" dstcountry="Unknown"`:'';
+  return `date=${ts.toISOString().split('T')[0]} time=${ts.toTimeString().split(' ')[0]} devname="${hn}" eventtime=${Math.floor(ts/1000)} logid="000001${rand(1000,9999)}" type="traffic" subtype="forward" level="notice" srcip=${srcip} srcport=${randomHighPort()} dstip=${dstip} dstport=${dstport} action="${action}" policyname="${pick(policies)}" service="${corr?'HTTPS':pick(services)}" sentbyte=${rand(64,1500000)} rcvdbyte=${rand(64,2500000)} app="${pick(apps)}"${hostnameField}`;
 }
 function genFortiUTM(ts) {
   const threats=['Trojan.GenericKD','Riskware/BitCoinMiner','W32/Kryptik','JS/Phishing'];
@@ -115,8 +146,9 @@ const PAN_END_REASONS=['aged-out','tcp-fin','tcp-rst-from-client','tcp-rst-from-
 function genPANTraffic(ts) {
   const apps=['web-browsing','ssl','dns','smtp','ftp','ssh','ms-office365','slack','zoom','msrdp','kerberos','ldap'];
   const rules=['allow-internet','allow-internal','vpn-access','dmz-access','guest-wifi'];
-  const action=pick(['allow','allow','allow','deny','drop','reset-both']);
-  const proto=pick(['tcp','udp','icmp']);
+  const corr=Math.random()<0.08?pickCorr():null;
+  const action=corr?pick(['allow','allow','deny']):pick(['allow','allow','allow','deny','drop','reset-both']);
+  const proto=corr?'tcp':pick(['tcp','udp','icmp']);
   const bytes=rand(100,5000000);
   const bytesSent=Math.floor(bytes*rand(30,70)/100);
   const bytesRcvd=bytes-bytesSent;
@@ -127,12 +159,15 @@ function genPANTraffic(ts) {
   const pt=panTs(ts);
   const pst=panTs(startTs);
   const srcZone=pick(['trust','dmz','vpn']);
+  const panSrcIp=corr?corr.srcIP:randomPrivateIP();
+  const panDstIp=corr?corr.c2IP:randomIP();
+  const panDstPort=corr?corr.c2Port:randomPort();
   const dstZone=srcZone==='trust'?'untrust':pick(['untrust','dmz']);
   // Fields: FUTURE_USE,recv_time,serial,TRAFFIC,subtype,0,gen_time,src,dst,nat_src,nat_dst,rule,src_user,dst_user,app,vsys,
   //         src_zone,dst_zone,inbound_if,outbound_if,log_action,0,session_id,repeat,src_port,dst_port,nat_src_port,nat_dst_port,
   //         flags,proto,action,bytes,bytes_sent,bytes_rcvd,packets,start_time,elapsed,category,0,seq_no,0x0,
   //         src_location,dst_location,0,pkts_sent,pkts_rcvd,session_end_reason,0,0,0,0,vsys_name,device,action_source
-  return `<14>${syslogTimestamp(ts)} ${dev} 1,${pt},${PAN_SERIAL},TRAFFIC,${pick(['end','end','start','drop'])},0,${pt},${randomPrivateIP()},${randomIP()},0.0.0.0,0.0.0.0,${pick(rules)},${randomUser()},,${pick(apps)},vsys1,${srcZone},${dstZone},ethernet1/${rand(1,4)},ethernet1/${rand(5,8)},default,0,${rand(1,65535)},1,${randomHighPort()},${randomPort()},0,0,0x400000,${proto},${action},${bytes},${bytesSent},${bytesRcvd},${pkts},${pst},${elapsed},any,0,${rand(1000000,9999999)},0x0,${pick(['10.0.0.0-10.255.255.255','192.168.0.0-192.168.255.255'])},${pick(PAN_COUNTRIES)},0,${Math.floor(pkts*0.55)},${pkts-Math.floor(pkts*0.55)},${pick(PAN_END_REASONS)},0,0,0,0,vsys1,${dev},from-policy`;
+  return `<14>${syslogTimestamp(ts)} ${dev} 1,${pt},${PAN_SERIAL},TRAFFIC,${pick(['end','end','start','drop'])},0,${pt},${panSrcIp},${panDstIp},0.0.0.0,0.0.0.0,${pick(rules)},${randomUser()},,${pick(apps)},vsys1,${srcZone},${dstZone},ethernet1/${rand(1,4)},ethernet1/${rand(5,8)},default,0,${rand(1,65535)},1,${randomHighPort()},${panDstPort},0,0,0x400000,${proto},${action},${bytes},${bytesSent},${bytesRcvd},${pkts},${pst},${elapsed},any,0,${rand(1000000,9999999)},0x0,${pick(['10.0.0.0-10.255.255.255','192.168.0.0-192.168.255.255'])},${corr?'Unknown':pick(PAN_COUNTRIES)},0,${Math.floor(pkts*0.55)},${pkts-Math.floor(pkts*0.55)},${pick(PAN_END_REASONS)},0,0,0,0,vsys1,${dev},from-policy`;
 }
 function genPANThreat(ts) {
   const threats=[
@@ -914,10 +949,15 @@ function genCSDetection(ts){
   return JSON.stringify({metadata:{eventType:'DetectionSummaryEvent',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'DetectionSummaryEvent',DetectId:`ldt:${randomHex(32)}:${rand(100000000,999999999)}`,DetectDescription:pick(CS_DETECT_NAMES),Severity:severity,SeverityName:sevName,OriginalFilename:pick(['powershell.exe','mimikatz.exe','PsExec.exe','meterpreter.exe','cobalt.exe']),FileName:pick(['powershell.exe','svchost32.exe','update.exe','temp.exe']),FilePath:'\\Device\\HarddiskVolume3\\Windows\\Temp\\',CommandLine:pick(SUSPICIOUS_CMDS),UserName:`${domain}\\${user}`,ComputerName:host,MachineDomain:domain,OperatingSystem:hi.os.name,ProcessId:rand(1000,65535),ParentProcessId:rand(1000,65535),ParentCommandLine:pick(['cmd.exe /c','explorer.exe','services.exe']),Tactic:tactic,Technique:technique,Objective:'Falcon Detection Method',SHA256HashData:randomHex(64),MD5HashData:randomHex(32),LocalIP:hi.ip,MACAddress:randomMAC(),PatternDispositionDescription:pick(['Prevention,Kill Process','Detection,Allow','Detection,Quarantine'])}});
 }
 function genCSDNS(ts){
-  const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host],user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
-  const isSusp=Math.random()<0.12;
-  const qname=isSusp?`${randomHex(12)}.${pick(['update-srv.net','cdn-edge.io','api-gateway.xyz','telemetry-hub.com'])}`:pick([randomDomain(),`wpad.${randomDomain()}`,`dc.${adDomain()}`,`_kerberos._tcp.${adDomain()}`]);
-  return JSON.stringify({metadata:{eventType:'DnsRequest',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'DnsRequest',DomainName:qname,RequestType:pick([1,28,5]),InterfaceIndex:rand(1,10),ComputerName:host,UserName:`${domain}\\${user}`,FileName:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe']),OperatingSystem:hi.os.name,LocalIP:hi.ip}});
+  const corr=Math.random()<0.12?pickCorr():null;
+  const host=corr?corr.srcHost:pick(CS_HOSTS);
+  const hi=CS_HOST_INFO[host]||CS_HOST_INFO[pick(CS_HOSTS)];
+  const user=randomUser(),domain=randomDomain().split('.')[0].toUpperCase();
+  const isSusp=!!corr||Math.random()<0.12;
+  const qname=corr?corr.c2Domain:(isSusp?`${randomHex(12)}.${pick(['update-srv.net','cdn-edge.io','api-gateway.xyz','telemetry-hub.com'])}`:pick([randomDomain(),`wpad.${randomDomain()}`,`dc.${adDomain()}`,`_kerberos._tcp.${adDomain()}`]));
+  const resolvedIP=corr?corr.c2IP:randomIP();
+  const localIP=corr?corr.srcIP:hi.ip;
+  return JSON.stringify({metadata:{eventType:'DnsRequest',eventCreationTime:ts.getTime(),customerIDString:`cid${randomHex(32)}`,offset:rand(1,9999999),version:'1.0',aid:hi.aid},event:{EventType:'DnsRequest',DomainName:qname,RequestType:corr?1:pick([1,28,5]),ResolvedIP:resolvedIP,InterfaceIndex:rand(1,10),ComputerName:host,UserName:`${domain}\\${user}`,FileName:corr?corr.process:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe']),OperatingSystem:hi.os.name,LocalIP:localIP}});
 }
 function genCSVulnerability(ts){
   const host=pick(CS_HOSTS),hi=CS_HOST_INFO[host];
@@ -991,11 +1031,15 @@ function generateCrowdStrikeLogs(count,tr,types=CS_TYPES_DEFAULT){
 
 // ─── Windows DNS & AD Generator ───────────────────────────────────────────────
 function genWDNSQuery(ts){
-  const host=randomHostname(),domain=adDomain();
-  const isSusp=Math.random()<0.08;
-  const qname=isSusp?`${randomHex(14)}.${pick(['tunneling.io','dns-exfil.net','c2-domain.xyz','update-srv.net'])}`:pick([randomDomain(),`wpad.${domain}`,`dc.${domain}`,`_kerberos._tcp.${domain}`,`ldap.${domain}`,`gc._msdcs.${domain}`]);
-  const qtype=pick(['A','AAAA','CNAME','MX','TXT']);const resolvedIp=randomIP();
-  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:22,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${host}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),QueryName:qname,QueryStatus:'0',QueryResults:resolvedIp,Image:`C:\\${pick(['Windows\\System32\\svchost.exe','Program Files\\Google\\Chrome\\Application\\chrome.exe','Windows\\System32\\powershell.exe','Windows\\explorer.exe'])}`}},event:{code:'22',action:'dns-query',category:['network'],type:['info'],outcome:'success',kind:'event'},dns:{question:{name:qname,type:qtype},resolved_ip:[resolvedIp],answers:[{data:resolvedIp,type:qtype,name:qname}]},network:{protocol:'dns',type:'ipv4'},host:{name:host,hostname:host}});
+  const domain=adDomain();
+  const corr=Math.random()<0.12?pickCorr():null;
+  const srcHost=corr?corr.srcHost:randomHostname();
+  const isSusp=!!corr||Math.random()<0.08;
+  const qname=corr?corr.c2Domain:(isSusp?`${randomHex(14)}.${pick(['tunneling.io','dns-exfil.net','c2-domain.xyz','update-srv.net'])}`:pick([randomDomain(),`wpad.${domain}`,`dc.${domain}`,`_kerberos._tcp.${domain}`,`ldap.${domain}`,`gc._msdcs.${domain}`]));
+  const qtype=corr?'A':pick(['A','AAAA','CNAME','MX','TXT']);
+  const resolvedIp=corr?corr.c2IP:randomIP();
+  const imgProc=corr?`C:\\Windows\\System32\\${corr.process}`:`C:\\${pick(['Windows\\System32\\svchost.exe','Program Files\\Google\\Chrome\\Application\\chrome.exe','Windows\\System32\\powershell.exe','Windows\\explorer.exe'])}`;
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:22,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${srcHost}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),QueryName:qname,QueryStatus:'0',QueryResults:resolvedIp,Image:imgProc}},event:{code:'22',action:'dns-query',category:['network'],type:['info'],outcome:'success',kind:'event'},dns:{question:{name:qname,type:qtype},resolved_ip:[resolvedIp],answers:[{data:resolvedIp,type:qtype,name:qname}]},network:{protocol:'dns',type:'ipv4'},host:{name:srcHost,hostname:srcHost,...(corr?{ip:[corr.srcIP]}:{})},source:{ip:corr?corr.srcIP:randomPrivateIP()}});
 }
 function genWDNSKerberos(ts){
   const dc=`${pick(AD_DC_HOSTS)}.${adDomain()}`,user=randomUser(),domain=adDomain().split('.')[0].toUpperCase();
@@ -1931,7 +1975,7 @@ const VENDOR_INGEST={
         const action=isDetect?'detection':isAlert?'alert':isVuln?'vulnerability-found':isProcess?'process-start':isNetwork?'network-connection':isDns?'dns-query':eventType.toLowerCase();
         const doc={
           '@timestamp':ts,message:l,
-          event:{dataset:ds,module:'crowdstrike',kind:isDetect||isAlert?'alert':'event',action,outcome:'success',category:cat,type:isProcess?['start']:isNetwork?['connection']:isDns?['info']:['info'],original:l},
+          event:{dataset:ds,module:'crowdstrike',kind:'event',action,outcome:'success',category:cat,type:isProcess?['start']:isNetwork?['connection']:isDns?['info']:isDetect||isAlert?['indicator']:['info'],original:l,...((isDetect||isAlert)?{severity:4}:{})},
           crowdstrike:{
             event:evt,
             metadata:{...meta,aid,event_type:eventType,customer_id:meta.customerIDString,event_creation_time:ts},
@@ -1943,13 +1987,13 @@ const VENDOR_INGEST={
         };
         if(isDetect){
           doc.event.severity=evt.Severity||3;
-          doc.rule={name:evt.DetectDescription||evt.DetectName};
+          doc.rule={name:evt.DetectDescription||evt.DetectName||pick(CS_DETECT_NAMES)};
           doc.threat={framework:'MITRE ATT&CK',tactic:{name:evt.Tactic},technique:{name:evt.Technique,id:evt.TechniqueId}};
           if(evt.FileName){doc.process={name:evt.FileName,executable:evt.FilePath?evt.FilePath+'\\'+evt.FileName:evt.FileName,pid:evt.ProcessId,...((evt.SHA256HashData||evt.MD5HashData)?{hash:{...(evt.SHA256HashData?{sha256:evt.SHA256HashData}:{}),...(evt.MD5HashData?{md5:evt.MD5HashData}:{})}}:{})};}
         }
         if(isAlert){
           doc.event.severity=evt.Severity||3;
-          doc.rule={name:evt.Name,description:evt.Description};
+          doc.rule={name:evt.Name||evt.DetectDescription||pick(CS_DETECT_NAMES),description:evt.Description};
           doc.threat={framework:'MITRE ATT&CK',tactic:{name:evt.Tactic},technique:{name:evt.Technique}};
           if(evt.FileName){doc.process={name:evt.FileName,command_line:evt.CommandLine,...((evt.SHA256HashData)?{hash:{sha256:evt.SHA256HashData}}:{})};}
           doc.crowdstrike={...doc.crowdstrike,alert:{id:evt.AlertId,type:evt.AlertType,status:evt.Status,assigned_to_name:evt.AssignedToName,severity:evt.SeverityName,tactic:evt.Tactic,technique:evt.Technique}};
@@ -1961,7 +2005,7 @@ const VENDOR_INGEST={
         }
         if(isProcess&&evt.FileName){doc.process={name:evt.FileName,executable:evt.ImageFileName||evt.FileName,command_line:evt.CommandLine,pid:evt.TargetProcessId||evt.ProcessId,...((evt.SHA256HashData||evt.MD5HashData)?{hash:{...(evt.SHA256HashData?{sha256:evt.SHA256HashData}:{}),...(evt.MD5HashData?{md5:evt.MD5HashData}:{})}}:{})};}
         if(isNetwork&&(evt.LocalAddressIP4||evt.RemoteAddressIP4)){doc.source={ip:evt.LocalAddressIP4,port:evt.LocalPort};doc.destination={ip:evt.RemoteAddressIP4,port:evt.RemotePort};doc.network={transport:Number(evt.Protocol)===6?'tcp':Number(evt.Protocol)===17?'udp':'unknown',direction:'outbound',type:'ipv4'};}
-        if(isDns&&evt.DomainName){const dnsTypeMap={1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA'};const dnsQType=dnsTypeMap[evt.RequestType]||'A';const dnsAns=evt.DomainName?[{data:randomIP(),type:dnsQType,name:evt.DomainName}]:[];doc.dns={question:{name:evt.DomainName,type:dnsQType},type:'query',answers:dnsAns,resolved_ip:dnsAns.map(a=>a.data)};doc.network={protocol:'dns',type:'ipv4'};}
+        if(isDns&&evt.DomainName){const dnsTypeMap={1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA'};const dnsQType=dnsTypeMap[evt.RequestType]||'A';const resolvedAddr=evt.ResolvedIP||randomIP();const dnsAns=[{data:resolvedAddr,type:dnsQType,name:evt.DomainName}];doc.dns={question:{name:evt.DomainName,type:dnsQType},type:'query',answers:dnsAns,resolved_ip:[resolvedAddr]};doc.network={protocol:'dns',type:'ipv4'};}
         return doc;
       }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'crowdstrike.fdr',module:'crowdstrike'},agent:agentField('elastic_agent'),data_stream:dsField('crowdstrike.fdr')};}
     },
@@ -2821,7 +2865,8 @@ export default function App(){
           vendorTotals[vid]+=share;assigned+=share;
         });
       }
-      // Step 3: generate
+      // Step 3: generate (seed attack correlations so DNS and firewall events share IPs)
+      seedAttackCorrelations(8);
       const nl={};
       selected.forEach(vid=>{
         const v=VENDORS.find(x=>x.id===vid);if(!v)return;
