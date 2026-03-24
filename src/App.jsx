@@ -994,7 +994,8 @@ function genWDNSQuery(ts){
   const host=randomHostname(),domain=adDomain();
   const isSusp=Math.random()<0.08;
   const qname=isSusp?`${randomHex(14)}.${pick(['tunneling.io','dns-exfil.net','c2-domain.xyz','update-srv.net'])}`:pick([randomDomain(),`wpad.${domain}`,`dc.${domain}`,`_kerberos._tcp.${domain}`,`ldap.${domain}`,`gc._msdcs.${domain}`]);
-  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:22,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${host}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),QueryName:qname,QueryStatus:'0',QueryResults:randomIP(),Image:`C:\\${pick(['Windows\\System32\\svchost.exe','Program Files\\Google\\Chrome\\Application\\chrome.exe','Windows\\System32\\powershell.exe','Windows\\explorer.exe'])}`}},event:{code:'22',action:'dns-query',category:['network'],outcome:'success',kind:'event'},dns:{question:{name:qname,type:pick(['A','AAAA','CNAME','MX','TXT'])},answers:[{data:randomIP()}]},host:{name:host,hostname:host}});
+  const qtype=pick(['A','AAAA','CNAME','MX','TXT']);const resolvedIp=randomIP();
+  return JSON.stringify({"@timestamp":formatTimestamp(ts),winlog:{event_id:22,channel:'Microsoft-Windows-Sysmon/Operational',computer_name:`${host}.${domain}`,provider_name:'Microsoft-Windows-Sysmon',record_id:rand(10000,9999999),event_data:{RuleName:'-',UtcTime:ts.toISOString().replace('T',' ').replace('Z',''),ProcessGuid:`{${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}}`,ProcessId:rand(100,65535),QueryName:qname,QueryStatus:'0',QueryResults:resolvedIp,Image:`C:\\${pick(['Windows\\System32\\svchost.exe','Program Files\\Google\\Chrome\\Application\\chrome.exe','Windows\\System32\\powershell.exe','Windows\\explorer.exe'])}`}},event:{code:'22',action:'dns-query',category:['network'],type:['info'],outcome:'success',kind:'event'},dns:{question:{name:qname,type:qtype},resolved_ip:[resolvedIp],answers:[{data:resolvedIp,type:qtype,name:qname}]},network:{protocol:'dns',type:'ipv4'},host:{name:host,hostname:host}});
 }
 function genWDNSKerberos(ts){
   const dc=`${pick(AD_DC_HOSTS)}.${adDomain()}`,user=randomUser(),domain=adDomain().split('.')[0].toUpperCase();
@@ -1930,7 +1931,7 @@ const VENDOR_INGEST={
         const action=isDetect?'detection':isAlert?'alert':isVuln?'vulnerability-found':isProcess?'process-start':isNetwork?'network-connection':isDns?'dns-query':eventType.toLowerCase();
         const doc={
           '@timestamp':ts,message:l,
-          event:{dataset:ds,module:'crowdstrike',kind:isDetect||isAlert?'alert':'event',action,outcome:'success',category:cat,type:isProcess?['start']:isNetwork||isDns?['connection']:['info'],original:l},
+          event:{dataset:ds,module:'crowdstrike',kind:isDetect||isAlert?'alert':'event',action,outcome:'success',category:cat,type:isProcess?['start']:isNetwork?['connection']:isDns?['info']:['info'],original:l},
           crowdstrike:{
             event:evt,
             metadata:{...meta,aid,event_type:eventType,customer_id:meta.customerIDString,event_creation_time:ts},
@@ -1960,7 +1961,7 @@ const VENDOR_INGEST={
         }
         if(isProcess&&evt.FileName){doc.process={name:evt.FileName,executable:evt.ImageFileName||evt.FileName,command_line:evt.CommandLine,pid:evt.TargetProcessId||evt.ProcessId,...((evt.SHA256HashData||evt.MD5HashData)?{hash:{...(evt.SHA256HashData?{sha256:evt.SHA256HashData}:{}),...(evt.MD5HashData?{md5:evt.MD5HashData}:{})}}:{})};}
         if(isNetwork&&(evt.LocalAddressIP4||evt.RemoteAddressIP4)){doc.source={ip:evt.LocalAddressIP4,port:evt.LocalPort};doc.destination={ip:evt.RemoteAddressIP4,port:evt.RemotePort};doc.network={transport:Number(evt.Protocol)===6?'tcp':Number(evt.Protocol)===17?'udp':'unknown',direction:'outbound',type:'ipv4'};}
-        if(isDns&&evt.DomainName){doc.dns={question:{name:evt.DomainName,type:evt.RequestType||'A'},type:'query'};}
+        if(isDns&&evt.DomainName){const dnsTypeMap={1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA'};const dnsQType=dnsTypeMap[evt.RequestType]||'A';const dnsAns=evt.DomainName?[{data:randomIP(),type:dnsQType,name:evt.DomainName}]:[];doc.dns={question:{name:evt.DomainName,type:dnsQType},type:'query',answers:dnsAns,resolved_ip:dnsAns.map(a=>a.data)};doc.network={protocol:'dns',type:'ipv4'};}
         return doc;
       }catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'crowdstrike.fdr',module:'crowdstrike'},agent:agentField('elastic_agent'),data_stream:dsField('crowdstrike.fdr')};}
     },
