@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 // ─── logUtils ────────────────────────────────────────────────────────────────
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -234,7 +234,7 @@ function genEndpointProcess(ts){const susp=Math.random()<0.25,proc=susp?pick(['p
 function genEndpointNetwork(ts){const hn=randomHostname();return JSON.stringify({"@timestamp":formatTimestamp(ts),event:{kind:"event",category:["network"],type:["connection"],action:"network_flow"},host:{name:hn,hostname:hn,ip:[randomPrivateIP()]},source:{ip:randomPrivateIP(),port:randomHighPort()},destination:{ip:randomIP(),port:randomPort(),domain:randomDomain()},network:{transport:pick(["tcp","udp"]),direction:"outbound",bytes:rand(64,5000000)},process:{name:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe']),pid:rand(100,65535)}});}
 const ALERT_NAMES=['Suspicious PowerShell Execution','Credential Dumping Detected','Lateral Movement via PsExec','Ransomware Behavior Detected','Persistence via Registry Run Key','Process Injection Detected','Data Exfiltration Attempt'];
 function genEndpointAlert(ts){const hn=randomHostname();return JSON.stringify({"@timestamp":formatTimestamp(ts),event:{kind:"alert",category:["malware"],action:"alert_created",severity:rand(1,100)},host:{name:hn,hostname:hn},user:{name:randomUser()},rule:{name:pick(ALERT_NAMES),severity:pick(['critical','high','medium']),risk_score:rand(50,100)},process:{name:pick(['powershell.exe','cmd.exe','rundll32.exe']),command_line:pick(SUSPICIOUS_CMDS)},threat:{framework:"MITRE ATT&CK",tactic:{name:pick(['Execution','Credential Access','Lateral Movement','Exfiltration'])}}});}
-function generateEndpointLogs(count,tr){return generateTimestamps(count,tr).map(ts=>{const r=Math.random();return r<0.4?genEndpointProcess(ts):r<0.7?genEndpointNetwork(ts):genEndpointAlert(ts);});}
+function generateEndpointLogs(count,tr,alertPct=30){const ap=Math.max(0,Math.min(100,alertPct))/100;return generateTimestamps(count,tr).map(ts=>{const r=Math.random();if(r<ap)return genEndpointAlert(ts);const r2=Math.random();return r2<0.57?genEndpointProcess(ts):genEndpointNetwork(ts);});}
 
 // ─── Windows Event Generator ──────────────────────────────────────────────────
 function genWinSecurity(ts){
@@ -1503,6 +1503,28 @@ const STORAGE_KEY='elastic_config_forge';
 function loadConfig(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');}catch{return null;}}
 function saveConfig(c){localStorage.setItem(STORAGE_KEY,JSON.stringify(c));}
 function buildHeaders(cfg){return {'Content-Type':'application/x-ndjson','Authorization':`ApiKey ${cfg.apiKey}`};}
+// Route all ES requests through the Vite dev-server proxy (/es-proxy) so the
+// browser never makes a cross-origin request — eliminates CORS failures and
+// allows self-signed certificates on local clusters.
+function fetchES(cfg,path,opts={}){
+  const headers={...buildHeaders(cfg),'X-ES-URL':cfg.url.replace(/\/$/,'')};
+  return fetch(`/es-proxy${path}`,{...opts,headers:{...headers,...(opts.headers||{})}});
+}
+// Send bulk lines in chunks with a pause between each batch so the cluster
+// isn't flooded. chunkSize is docs (not lines), pauseMs is the inter-batch delay.
+async function bulkSend(cfg,lines,chunkSize=500,pauseMs=300){
+  const allItems=[];
+  const batches=[];
+  for(let i=0;i<lines.length;i+=chunkSize*2)batches.push(lines.slice(i,i+chunkSize*2));
+  for(let b=0;b<batches.length;b++){
+    const res=await fetchES(cfg,'/_bulk',{method:'POST',body:batches[b].join('\n')+'\n'});
+    if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const d=await res.json();
+    if(d.items)allItems.push(...d.items);
+    if(b<batches.length-1)await new Promise(r=>setTimeout(r,pauseMs));
+  }
+  return{items:allItems};
+}
 
 // ─── elasticIngest ────────────────────────────────────────────────────────────
 function agentField(type){return{type,version:'8.13.0',ephemeral_id:Math.random().toString(36).slice(2)};}
@@ -2041,9 +2063,7 @@ async function pushLogsToElastic(logs,indexOverrides={}){
   const idxCounts={},bulkLines=[];
   for(const[vid,rawLogs]of Object.entries(logs)){const ing=VENDOR_INGEST[vid];if(!ing)continue;const override=indexOverrides[vid]?.trim()||null;for(const raw of rawLogs){const idx=override||ing.getIndex(raw);const doc=JSON.parse(JSON.stringify(ing.toDoc(raw)));bulkLines.push(JSON.stringify({create:{_index:idx}}));bulkLines.push(JSON.stringify(doc));idxCounts[idx]=(idxCounts[idx]||0)+1;}}
   if(bulkLines.length===0)throw new Error('No logs to push');
-  const res=await fetch(`${cfg.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(cfg),body:bulkLines.join('\n')+'\n'});
-  if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  const data=await res.json();const total=bulkLines.length/2;
+  const data=await bulkSend(cfg,bulkLines);const total=bulkLines.length/2;
   const errItems=(data.items||[]).filter(i=>i.create?.error||i.index?.error);
   const errs=errItems.length;
   // Group errors by index so we can see which indices are failing
@@ -2099,7 +2119,7 @@ function ConfigDialog({open,onClose,onSave}){
   const [showCurl,setShowCurl]=useState(false);
   useEffect(()=>{if(open){const s=loadConfig();if(s)setCfg({url:s.url||'',apiKey:s.apiKey||'',kibanaUrl:s.kibanaUrl||''});}},[open]);
   const upd=(k,v)=>setCfg(c=>({...c,[k]:v}));
-  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetch(`${cfg.url.replace(/\/$/,'')}/_cluster/health`,{headers:buildHeaders(cfg),mode:'cors'});if(r.ok){const d=await r.json();setStatus('ok');setErr(`Cluster: ${d.cluster_name} — ${d.status}`);}else{setStatus('error');setErr(`HTTP ${r.status}: ${r.statusText}`);}}catch(e){setStatus('error');setErr(e.message==='Failed to fetch'?'CORS_ERROR':e.message);}};
+  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetchES(cfg,'/_cluster/health',{headers:{'Content-Type':'application/json'}});if(r.ok){const d=await r.json();setStatus('ok');setErr(`Cluster: ${d.cluster_name} — ${d.status}`);}else{setStatus('error');setErr(`HTTP ${r.status}: ${r.statusText}`);}}catch(e){setStatus('error');setErr(e.message);}};
   const save=()=>{saveConfig(cfg);onSave(cfg);onClose();};
   const curl=`curl -k -H "Authorization: ApiKey ${cfg.apiKey}" "${cfg.url.replace(/\/$/,'')}/_cluster/health?pretty"`;
   if(!open)return null;
@@ -2171,7 +2191,7 @@ function VendorLogo({id}){
 
 // Vendor Card
 const WIN_TYPE_LABELS={security:'Security',application:'Application',system:'System',applocker:'AppLocker',powershell:'PowerShell'};
-function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,oracleLogTypes,onOracleLogTypes,mssqlLogTypes,onMSSQLLogTypes,cloudtrailLogTypes,onCloudtrailLogTypes,oktaLogTypes,onOktaLogTypes,crowdstrikeLogTypes,onCrowdstrikeLogTypes,wdnsLogTypes,onWdnsLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,indexOverride,onIndexOverride}){
+function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRandomness,minLogs,onMinLogs,emailDomain,onEmailDomain,windowsLogTypes,onWindowsLogTypes,linuxLogTypes,onLinuxLogTypes,oracleLogTypes,onOracleLogTypes,mssqlLogTypes,onMSSQLLogTypes,cloudtrailLogTypes,onCloudtrailLogTypes,oktaLogTypes,onOktaLogTypes,crowdstrikeLogTypes,onCrowdstrikeLogTypes,wdnsLogTypes,onWdnsLogTypes,hostnamePrefix,onHostnamePrefix,hostnameCap,onHostnameCap,includeAdmin,onIncludeAdmin,endpointAlertPct,onEndpointAlertPct,indexOverride,onIndexOverride}){
   return(
     <div onClick={()=>onToggle(vendor.id)} className={cn("relative cursor-pointer p-4 rounded-xl border-2 transition-all",selected?"border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10":"border-gray-700 hover:border-gray-500 bg-gray-900/60")}>
       {selected&&<div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center"><span className="text-white text-[10px]">✓</span></div>}
@@ -2214,6 +2234,13 @@ function VendorCard({vendor,selected,onToggle,integrationMissing,randomness,onRa
                 <label className="text-[10px] text-gray-500 flex-1">Max unique hosts</label>
                 <input type="number" min="1" max="500" value={hostnameCap??''} onChange={e=>onHostnameCap(vendor.id,e.target.value)} placeholder={String(VENDOR_POOL[vendor.id]?.[randomness]??'∞')} className="w-16 bg-gray-900 border border-gray-600 rounded px-2 py-0.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500 text-right"/>
               </div>
+            </div>
+          )}
+          {vendor.id==='endpoint'&&(
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-[10px] text-gray-500 flex-1">Alert %</label>
+              <input type="range" min="0" max="100" step="5" value={endpointAlertPct} onChange={e=>onEndpointAlertPct(Number(e.target.value))} className="flex-1 accent-blue-500"/>
+              <span className="text-[10px] font-mono text-gray-300 w-7 text-right">{endpointAlertPct}%</span>
             </div>
           )}
           {(vendor.id==='endpoint'||vendor.id==='windows'||vendor.id==='linux')&&(
@@ -2487,9 +2514,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
         });
       });
       const noiseCount=Object.values(noise).reduce((s,l)=>s+l.length,0);
-      const res=await fetch(`${elasticConfig.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(elasticConfig),body:bulkLines.join('\n')+'\n'});
-      if(!res.ok)throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      const d=await res.json();
+      const d=await bulkSend(elasticConfig,bulkLines);
       const errs=d.items?.filter(i=>i.create?.error||i.index?.error)||[];
       setPushResult({alerts:alerts.length,core:coreCount,noise:noiseCount,errors:errs.length,firstError:errs[0]?.create?.error?.reason||errs[0]?.index?.error?.reason});
     }catch(e){setPushResult({error:e.message});}
@@ -2636,8 +2661,7 @@ function ScenarioViewer({scenario,events,elasticConfig}){
     setPushing(true);
     try{
       const lines=events.map(e=>{let doc;try{doc=JSON.parse(e.log);}catch{doc={message:e.log};}if(!doc['@timestamp'])doc['@timestamp']=e.timestamp.toISOString();let idx='logs-endpoint.events.process-default';if(e.source==='Elastic Security Alert')idx='.alerts-security.alerts-default';else if(e.source==='Fortinet FortiGate')idx='logs-fortinet.fortigate.utm-default';else if(e.source==='Windows Security')idx='logs-windows.security-default';return`${JSON.stringify({create:{_index:idx}})}\n${JSON.stringify(doc)}`;});
-      const res=await fetch(`${elasticConfig.url.replace(/\/$/,'')}/_bulk`,{method:'POST',headers:buildHeaders(elasticConfig),body:lines.join('\n')+'\n'});
-      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      await bulkSend(elasticConfig,lines);
       alert(`✓ Pushed ${events.length} scenario events`);
     }catch(e){alert(`Push failed: ${e.message}`);}
     finally{setPushing(false);}
@@ -2703,6 +2727,7 @@ export default function App(){
   );
   const [maxLogs,setMaxLogs]=useState(500);
   const [timeRange,setTimeRange]=useState('60');
+  const [logsPerDay,setLogsPerDay]=useState(false);
   const [logs,setLogs]=useState({});
   const [generating,setGenerating]=useState(false);
   const [pushing,setPushing]=useState(false);
@@ -2718,11 +2743,25 @@ export default function App(){
   const [vendorHostnamePrefix,setVendorHostnamePrefix]=useState({windows:'',linux:'',endpoint:''});
   const [vendorHostnameCap,setVendorHostnameCap]=useState({windows:null,linux:null,endpoint:null});
   const [vendorIncludeAdmin,setVendorIncludeAdmin]=useState({endpoint:false,windows:false,linux:false});
+  const [endpointAlertPct,setEndpointAlertPct]=useState(30);
   const [vendorIndexOverride,setVendorIndexOverride]=useState({});
   // Scenarios state
   const [activeScenario,setActiveScenario]=useState(null);
   const [scenarioEvents,setScenarioEvents]=useState([]);
   const [aptScenarioData,setAptScenarioData]=useState(null);
+  // Streaming mode state
+  const [streamMode,setStreamMode]=useState(false);
+  const [streamRate,setStreamRate]=useState(10);
+  const [streamDuration,setStreamDuration]=useState(5);
+  const [streaming,setStreaming]=useState(false);
+  const [streamPaused,setStreamPaused]=useState(false);
+  const [streamStats,setStreamStats]=useState({sent:0,errors:0,elapsed:0,logsPerSec:0});
+  // Streaming refs (mutable, read inside async tick)
+  const streamingRef=useRef(false);
+  const streamPausedRef=useRef(false);
+  const streamTimeoutRef=useRef(null);
+  const streamStatsRef=useRef({sent:0,errors:0,startTime:null});
+  const tickRef=useRef(null);
 
   // Keep maxLogs >= sum of selected minimums
   useEffect(()=>{
@@ -2870,12 +2909,19 @@ export default function App(){
   const handleGenerate=useCallback(()=>{
     setGenerating(true);
     setTimeout(()=>{
+      // When "Last 7 days" + logsPerDay checked: treat maxLogs as per-day, sum 7 jittered buckets
+      const effectiveMax=timeRange==='10080'&&logsPerDay
+        ? Array.from({length:7},()=>{
+            const jitter=(Math.random()<0.5?-0.10:0.05)*Math.random();
+            return Math.round(maxLogs*(1+jitter));
+          }).reduce((s,n)=>s+n,0)
+        : maxLogs;
       // Step 1: each vendor gets its minimum
       const vendorTotals={};
       selected.forEach(vid=>{vendorTotals[vid]=Math.max(1,vendorMinLogs[vid]||50);});
       const sumMins=Object.values(vendorTotals).reduce((s,n)=>s+n,0);
       // Step 2: distribute remaining capacity randomly across selected vendors
-      const remaining=Math.max(0,maxLogs-sumMins);
+      const remaining=Math.max(0,effectiveMax-sumMins);
       if(remaining>0&&selected.length>0){
         const weights=selected.map(()=>Math.random()+0.1);
         const totalW=weights.reduce((s,w)=>s+w,0);
@@ -2897,14 +2943,14 @@ export default function App(){
         setPool(poolSize,prefix);
         _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
         _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
-        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):vid==='oracle'?generateOracleLogs(vendorTotals[vid],parseInt(timeRange),oracleLogTypes):vid==='mssql'?generateMSSQLLogs(vendorTotals[vid],parseInt(timeRange),mssqlLogTypes):vid==='cloudtrail'?generateCloudTrailLogs(vendorTotals[vid],parseInt(timeRange),cloudtrailLogTypes):vid==='okta'?generateOktaLogs(vendorTotals[vid],parseInt(timeRange),oktaLogTypes):vid==='crowdstrike'?generateCrowdStrikeLogs(vendorTotals[vid],parseInt(timeRange),crowdstrikeLogTypes):vid==='wdns'?generateWDNSLogs(vendorTotals[vid],parseInt(timeRange),wdnsLogTypes):v.generator(vendorTotals[vid],parseInt(timeRange));
+        nl[v.id]=vid==='windows'?generateWindowsEventLogs(vendorTotals[vid],parseInt(timeRange),windowsLogTypes):vid==='linux'?generateLinuxLogs(vendorTotals[vid],parseInt(timeRange),linuxLogTypes):vid==='oracle'?generateOracleLogs(vendorTotals[vid],parseInt(timeRange),oracleLogTypes):vid==='mssql'?generateMSSQLLogs(vendorTotals[vid],parseInt(timeRange),mssqlLogTypes):vid==='cloudtrail'?generateCloudTrailLogs(vendorTotals[vid],parseInt(timeRange),cloudtrailLogTypes):vid==='okta'?generateOktaLogs(vendorTotals[vid],parseInt(timeRange),oktaLogTypes):vid==='crowdstrike'?generateCrowdStrikeLogs(vendorTotals[vid],parseInt(timeRange),crowdstrikeLogTypes):vid==='wdns'?generateWDNSLogs(vendorTotals[vid],parseInt(timeRange),wdnsLogTypes):vid==='endpoint'?generateEndpointLogs(vendorTotals[vid],parseInt(timeRange),endpointAlertPct):v.generator(vendorTotals[vid],parseInt(timeRange));
       });
       _emailDomain=null;
       _hostnamePrefix=null;
       _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,vendorMinLogs,maxLogs,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes,cloudtrailLogTypes,oktaLogTypes,crowdstrikeLogTypes,wdnsLogTypes]);
+  },[selected,vendorMinLogs,maxLogs,logsPerDay,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes,cloudtrailLogTypes,oktaLogTypes,crowdstrikeLogTypes,wdnsLogTypes,endpointAlertPct]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
@@ -2916,6 +2962,67 @@ export default function App(){
     }catch(e){alert(`Error: ${e.message}`);}
     finally{setPushing(false);}
   },[logs,elasticConfig]);
+
+  // Cleanup on unmount
+  useEffect(()=>()=>{streamingRef.current=false;clearTimeout(streamTimeoutRef.current);},[]);
+
+  // "Latest ref" pattern: tickRef.current is rewritten each render so the recursive
+  // setTimeout always closes over current state (selected, streamRate, etc.)
+  tickRef.current=async()=>{
+    if(!streamingRef.current||streamPausedRef.current)return;
+    const cfg=loadConfig();
+    if(!cfg?.url){streamingRef.current=false;setStreaming(false);return;}
+    const numVendors=Math.max(1,selected.length);
+    const logsPerVendor=Math.max(1,Math.round(streamRate/numVendors));
+    const nl={};
+    selected.forEach(vid=>{
+      const v=VENDORS.find(x=>x.id===vid);if(!v)return;
+      const lvl=vendorRandomness[vid]||'med';
+      const prefix=['windows','linux','endpoint'].includes(vid)?(vendorHostnamePrefix[vid]?.trim()||null):null;
+      _hostnamePrefix=prefix;
+      const poolSize=vendorHostnameCap[vid]!=null?vendorHostnameCap[vid]:(VENDOR_POOL[vid]?.[lvl]??null);
+      setPool(poolSize,prefix);
+      _emailDomain=vid==='email'?(emailDomain.trim()||null):null;
+      _includeAdminUsers=['endpoint','windows','linux'].includes(vid)?(vendorIncludeAdmin[vid]||false):false;
+      nl[vid]=vid==='windows'?generateWindowsEventLogs(logsPerVendor,1,windowsLogTypes):vid==='linux'?generateLinuxLogs(logsPerVendor,1,linuxLogTypes):vid==='oracle'?generateOracleLogs(logsPerVendor,1,oracleLogTypes):vid==='mssql'?generateMSSQLLogs(logsPerVendor,1,mssqlLogTypes):vid==='cloudtrail'?generateCloudTrailLogs(logsPerVendor,1,cloudtrailLogTypes):vid==='okta'?generateOktaLogs(logsPerVendor,1,oktaLogTypes):vid==='crowdstrike'?generateCrowdStrikeLogs(logsPerVendor,1,crowdstrikeLogTypes):vid==='wdns'?generateWDNSLogs(logsPerVendor,1,wdnsLogTypes):v.generator(logsPerVendor,1);
+    });
+    _emailDomain=null;_hostnamePrefix=null;_includeAdminUsers=false;
+    try{
+      const result=await pushLogsToElastic(nl,vendorIndexOverride);
+      streamStatsRef.current.sent+=result.total;
+      streamStatsRef.current.errors+=result.errors;
+    }catch(e){console.error('[stream]',e);streamStatsRef.current.errors+=1;}
+    const elapsed=Math.floor((Date.now()-streamStatsRef.current.startTime)/1000);
+    const logsPerSec=elapsed>0?Math.round(streamStatsRef.current.sent/elapsed):0;
+    setStreamStats({sent:streamStatsRef.current.sent,errors:streamStatsRef.current.errors,elapsed,logsPerSec});
+    if(streamDuration>0&&elapsed>=streamDuration*60){streamingRef.current=false;setStreaming(false);return;}
+    if(streamingRef.current)streamTimeoutRef.current=setTimeout(()=>tickRef.current?.(),1000);
+  };
+
+  const handleStreamStart=useCallback(()=>{
+    if(selected.length===0||!loadConfig()?.url)return;
+    seedAttackCorrelations(8);
+    streamingRef.current=true;
+    streamPausedRef.current=false;
+    streamStatsRef.current={sent:0,errors:0,startTime:Date.now()};
+    setStreamStats({sent:0,errors:0,elapsed:0,logsPerSec:0});
+    setStreaming(true);setStreamPaused(false);
+    streamTimeoutRef.current=setTimeout(()=>tickRef.current?.(),100);
+  },[selected]);
+
+  const handleStreamPause=useCallback(()=>{
+    const nowPaused=!streamPausedRef.current;
+    streamPausedRef.current=nowPaused;
+    setStreamPaused(nowPaused);
+    if(!nowPaused)streamTimeoutRef.current=setTimeout(()=>tickRef.current?.(),0);
+  },[]);
+
+  const handleStreamStop=useCallback(()=>{
+    streamingRef.current=false;
+    streamPausedRef.current=false;
+    clearTimeout(streamTimeoutRef.current);
+    setStreaming(false);setStreamPaused(false);
+  },[]);
 
   const handleScenario=s=>{
     setActiveScenario(s);
@@ -2978,30 +3085,94 @@ export default function App(){
               <div className="lg:col-span-3">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Log Sources</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} oracleLogTypes={oracleLogTypes} onOracleLogTypes={handleOracleLogTypes} mssqlLogTypes={mssqlLogTypes} onMSSQLLogTypes={handleMSSQLLogTypes} cloudtrailLogTypes={cloudtrailLogTypes} onCloudtrailLogTypes={handleCloudtrailLogTypes} oktaLogTypes={oktaLogTypes} onOktaLogTypes={handleOktaLogTypes} crowdstrikeLogTypes={crowdstrikeLogTypes} onCrowdstrikeLogTypes={handleCrowdstrikeLogTypes} wdnsLogTypes={wdnsLogTypes} onWdnsLogTypes={handleWdnsLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
+                  {VENDORS.map(v=><VendorCard key={v.id} vendor={v} selected={selected.includes(v.id)} onToggle={toggleVendor} integrationMissing={false} randomness={vendorRandomness[v.id]} onRandomness={handleRandomness} minLogs={vendorMinLogs[v.id]||50} onMinLogs={handleMinLogs} emailDomain={emailDomain} onEmailDomain={setEmailDomain} windowsLogTypes={windowsLogTypes} onWindowsLogTypes={handleWindowsLogTypes} linuxLogTypes={linuxLogTypes} onLinuxLogTypes={handleLinuxLogTypes} oracleLogTypes={oracleLogTypes} onOracleLogTypes={handleOracleLogTypes} mssqlLogTypes={mssqlLogTypes} onMSSQLLogTypes={handleMSSQLLogTypes} cloudtrailLogTypes={cloudtrailLogTypes} onCloudtrailLogTypes={handleCloudtrailLogTypes} oktaLogTypes={oktaLogTypes} onOktaLogTypes={handleOktaLogTypes} crowdstrikeLogTypes={crowdstrikeLogTypes} onCrowdstrikeLogTypes={handleCrowdstrikeLogTypes} wdnsLogTypes={wdnsLogTypes} onWdnsLogTypes={handleWdnsLogTypes} hostnamePrefix={vendorHostnamePrefix[v.id]||''} onHostnamePrefix={handleHostnamePrefix} hostnameCap={vendorHostnameCap[v.id]??null} onHostnameCap={handleHostnameCap} includeAdmin={vendorIncludeAdmin[v.id]||false} onIncludeAdmin={handleIncludeAdmin} endpointAlertPct={endpointAlertPct} onEndpointAlertPct={setEndpointAlertPct} indexOverride={vendorIndexOverride[v.id]||''} onIndexOverride={handleIndexOverride}/>)}
                 </div>
               </div>
               <div className="lg:col-span-1">
                 <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Configuration</h2>
                 <div className="sticky top-20 bg-gray-900 border border-gray-700 rounded-xl p-4 space-y-5">
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs text-gray-400">Max Total Logs</label>
-                      <span className="text-sm font-mono font-semibold text-white">{maxLogs.toLocaleString()}</span>
-                    </div>
-                    <input type="number" min="1" max="100000" step="100" value={maxLogs} onChange={e=>setMaxLogs(Math.min(100000,Math.max(1,Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
-                    {(()=>{const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);return(<div className="flex justify-between text-[10px] text-gray-500"><span>min guaranteed: <span className={sum>maxLogs?'text-amber-400 font-semibold':''}>{sum.toLocaleString()}</span></span><span>max 100,000</span></div>);})()}
-                  </div>
+                  {/* Mode Toggle */}
                   <div className="space-y-1.5">
-                    <label className="text-xs text-gray-400">Time Range</label>
-                    <select value={timeRange} onChange={e=>setTimeRange(e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
-                      {[['15','Last 15 minutes'],['60','Last 1 hour'],['360','Last 6 hours'],['1440','Last 24 hours'],['10080','Last 7 days']].map(([v,l])=><option key={v} value={v}>{l}</option>)}
-                    </select>
+                    <label className="text-xs text-gray-400">Mode</label>
+                    <div className="flex rounded-lg border border-gray-700 overflow-hidden text-xs font-medium">
+                      <button onClick={()=>{setStreamMode(false);if(streaming)handleStreamStop();}} className={cn("flex-1 py-2 transition-colors",!streamMode?"bg-blue-600 text-white":"text-gray-400 hover:text-white")}>Batch</button>
+                      <button onClick={()=>setStreamMode(true)} className={cn("flex-1 py-2 transition-colors",streamMode?"bg-blue-600 text-white":"text-gray-400 hover:text-white")}>Stream</button>
+                    </div>
                   </div>
-                  <Button onClick={handleGenerate} disabled={selected.length===0||generating} className="w-full">
-                    {generating?'⟳ Generating…':`⚡ Generate ${selected.length>0?`${selected.length} Source${selected.length>1?'s':''}`:''}`}
-                  </Button>
-                  {selected.length===0&&<p className="text-xs text-gray-500 text-center">Select at least one log source</p>}
+                  {!streamMode&&<>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-xs text-gray-400">Max Total Logs</label>
+                        <span className="text-sm font-mono font-semibold text-white">{maxLogs.toLocaleString()}</span>
+                      </div>
+                      <input type="number" min="1" max="100000" step="100" value={maxLogs} onChange={e=>setMaxLogs(Math.min(100000,Math.max(1,Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+                      {(()=>{const sum=selected.reduce((s,vid)=>s+(vendorMinLogs[vid]||50),0);return(<div className="flex justify-between text-[10px] text-gray-500"><span>min guaranteed: <span className={sum>maxLogs?'text-amber-400 font-semibold':''}>{sum.toLocaleString()}</span></span><span>max 100,000</span></div>);})()}
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-400">Time Range</label>
+                      <select value={timeRange} onChange={e=>setTimeRange(e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
+                        {[['15','Last 15 minutes'],['60','Last 1 hour'],['360','Last 6 hours'],['1440','Last 24 hours'],['10080','Last 7 days']].map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                      </select>
+                      {timeRange==='10080'&&(
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={logsPerDay} onChange={e=>setLogsPerDay(e.target.checked)} className="accent-blue-500"/>
+                          <span className="text-xs text-gray-400">Logs per day</span>
+                          {logsPerDay&&<span className="text-[10px] text-gray-500 font-mono ml-auto">~{(maxLogs*7).toLocaleString()} total</span>}
+                        </label>
+                      )}
+                    </div>
+                    <Button onClick={handleGenerate} disabled={selected.length===0||generating} className="w-full">
+                      {generating?'⟳ Generating…':`⚡ Generate ${selected.length>0?`${selected.length} Source${selected.length>1?'s':''}`:''}`}
+                    </Button>
+                    {selected.length===0&&<p className="text-xs text-gray-500 text-center">Select at least one log source</p>}
+                  </>}
+                  {streamMode&&<>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-400">Rate (logs / sec)</label>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {[1,5,10,50,100].map(r=>(
+                          <button key={r} onClick={()=>setStreamRate(r)} disabled={streaming} className={cn("px-2.5 py-1 rounded text-xs font-mono transition-colors",streamRate===r?"bg-blue-600 text-white":"border border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white","disabled:opacity-40 disabled:pointer-events-none")}>{r}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-400">Duration</label>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {[[1,'1m'],[5,'5m'],[30,'30m'],[0,'∞']].map(([d,l])=>(
+                          <button key={d} onClick={()=>setStreamDuration(d)} disabled={streaming} className={cn("px-2.5 py-1 rounded text-xs font-mono transition-colors",streamDuration===d?"bg-blue-600 text-white":"border border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white","disabled:opacity-40 disabled:pointer-events-none")}>{l}</button>
+                        ))}
+                      </div>
+                    </div>
+                    {!streaming?(
+                      <Button onClick={handleStreamStart} disabled={selected.length===0||!elasticConfig?.url} className="w-full">
+                        ▶ Start Streaming
+                      </Button>
+                    ):(
+                      <div className="flex gap-2">
+                        <Button onClick={handleStreamPause} variant="outline" className="flex-1">{streamPaused?'▶ Resume':'⏸ Pause'}</Button>
+                        <Button onClick={handleStreamStop} variant="outline" className="border-red-500/40 text-red-400 hover:bg-red-500/10 flex-1">■ Stop</Button>
+                      </div>
+                    )}
+                    {(streaming||streamStats.sent>0)&&(
+                      <div className="bg-gray-800/60 rounded-lg p-3 space-y-2 border border-gray-700/60">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Live Stats</span>
+                          {streaming&&!streamPaused&&<span className="flex items-center gap-1 text-[10px] text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block"/>LIVE</span>}
+                          {streamPaused&&<span className="text-[10px] text-amber-400">PAUSED</span>}
+                          {!streaming&&streamStats.sent>0&&<span className="text-[10px] text-gray-500">DONE</span>}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-center">
+                          <div><div className="text-sm font-mono font-semibold text-white">{streamStats.sent.toLocaleString()}</div><div className="text-[10px] text-gray-500">sent</div></div>
+                          <div><div className={cn("text-sm font-mono font-semibold",streamStats.errors>0?"text-red-400":"text-white")}>{streamStats.errors}</div><div className="text-[10px] text-gray-500">errors</div></div>
+                          <div><div className="text-sm font-mono font-semibold text-white">{streamStats.logsPerSec}</div><div className="text-[10px] text-gray-500">logs/sec</div></div>
+                          <div><div className="text-sm font-mono font-semibold text-white">{streamStats.elapsed}s</div><div className="text-[10px] text-gray-500">elapsed</div></div>
+                        </div>
+                        {streamDuration>0&&streaming&&<div className="w-full bg-gray-700 rounded-full h-1"><div className="bg-blue-500 h-1 rounded-full transition-all" style={{width:`${Math.min(100,streamStats.elapsed/(streamDuration*60)*100)}%`}}/></div>}
+                      </div>
+                    )}
+                    {selected.length===0&&<p className="text-xs text-gray-500 text-center">Select at least one log source</p>}
+                    {!elasticConfig?.url&&<p className="text-xs text-amber-400/80 text-center">Connect Elasticsearch to stream</p>}
+                  </>}
                 </div>
               </div>
             </div>
