@@ -1319,15 +1319,27 @@ function generateRansomwareScenario(){
   return{meta:{name:'Ransomware Outbreak',attackerProfile:'Financially motivated threat actor',targetOrg:'Enterprise',description:`Office macro → fileless PowerShell → VSS/backup deletion → Defender disabled → mass encryption (${ctx.malwareFamily}) → EternalBlue SMB spread to second host. ${alerts.length} correlated alerts across 3 MITRE tactics.`,timeRange:{from:t(0),to:t(420)}},ctx,alerts};
 }
 
-function generateScenarioNoise(level,tr=120){
+function generateScenarioNoise(level,tr=120,customCount=1000){
   if(!level||level==='off')return{};
-  const conf={
-    low:   {windows:160, endpoint:100, fortinet:240},
-    medium:{windows:400, endpoint:240, fortinet:600, email:80,  linux:120},
-    high:  {windows:1000,endpoint:600, fortinet:1200,email:200, linux:300, paloalto:400},
-  }[level]||{};
+  let conf;
+  if(level==='custom'){
+    const t=Math.max(1,customCount);
+    conf={
+      windows: Math.round(t*0.50),
+      linux:   Math.round(t*0.10),
+      email:   Math.round(t*0.1333),
+      fortinet:Math.round(t*0.1334),
+      oracle:  Math.round(t*0.1333),
+    };
+  }else{
+    conf={
+      low:   {windows:160, endpoint:100, fortinet:240},
+      medium:{windows:400, endpoint:240, fortinet:600, email:80,  linux:120},
+      high:  {windows:1000,endpoint:600, fortinet:1200,email:200, linux:300, paloalto:400},
+    }[level]||{};
+  }
   const noise={};
-  setPool(level==='high'?20:level==='medium'?10:5);
+  setPool(level==='high'?20:level==='medium'?10:level==='custom'&&customCount>=1500?20:level==='custom'&&customCount>=500?10:5);
   Object.entries(conf).forEach(([vid,count])=>{
     const v=VENDORS.find(x=>x.id===vid);if(!v)return;
     // Endpoint noise must not generate event.kind="alert" docs — those go to
@@ -2430,10 +2442,11 @@ function LogViewer({logs,vendorLabels}){
 const SEV_COLOR={critical:'border-l-red-500',high:'border-l-orange-400',medium:'border-l-yellow-400',low:'border-l-blue-400'};
 const SEV_DOT={critical:'bg-red-500',high:'bg-orange-400',medium:'bg-yellow-400',low:'bg-blue-400'};
 const SEV_BADGE={critical:'border-red-500/40 text-red-400 bg-red-500/10',high:'border-orange-400/40 text-orange-400 bg-orange-400/10',medium:'border-yellow-400/40 text-yellow-300 bg-yellow-400/10',low:'border-blue-400/40 text-blue-400 bg-blue-400/10'};
-const NOISE_LABELS={off:'No noise',low:'Low (~250 logs, 3 hosts)',medium:'Medium (~750 logs, 10 hosts)',high:'High (~1,650 logs, 20 hosts)'};
+const NOISE_LABELS={off:'No noise',low:'Low (~250 logs, 3 hosts)',medium:'Medium (~750 logs, 10 hosts)',high:'High (~1,650 logs, 20 hosts)',custom:'Custom (50% Windows, 10% Linux, 40% email/firewall/database)'};
 
 function APTScenarioViewer({scenario,data,elasticConfig}){
   const [noiseLevel,setNoiseLevel]=useState('medium');
+  const [customNoiseCount,setCustomNoiseCount]=useState(1000);
   const [pushing,setPushing]=useState(false);
   const [pushResult,setPushResult]=useState(null);
   const [expanded,setExpanded]=useState({});
@@ -2465,7 +2478,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
       });
       const coreCount=Object.values(coreLogs).reduce((s,l)=>s+l.length,0);
       // 3. Background noise → vendor indices
-      const noise=generateScenarioNoise(noiseLevel);
+      const noise=generateScenarioNoise(noiseLevel,120,customNoiseCount);
       Object.entries(noise).forEach(([vid,rawLogs])=>{
         const ing=VENDOR_INGEST[vid];if(!ing)return;
         rawLogs.forEach(raw=>{
@@ -2487,7 +2500,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
 
   const dl=()=>{
     const coreLogs=generateScenarioCoreLogs(ctx,meta.timeRange);
-    const noise=generateScenarioNoise(noiseLevel);
+    const noise=generateScenarioNoise(noiseLevel,120,customNoiseCount);
     const vendorLines=logs=>Object.entries(logs).flatMap(([vid,rawLogs])=>{const ing=VENDOR_INGEST[vid];if(!ing)return[];return rawLogs.map(raw=>`${JSON.stringify({create:{_index:ing.getIndex(raw)}})}\n${JSON.stringify(ing.toDoc(raw))}`);});
     const lines=[
       ...alerts.map(a=>`${JSON.stringify({create:{_index:'.alerts-security.alerts-default'}})}\n${JSON.stringify(a)}`),
@@ -2540,14 +2553,21 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
           </div>}
         </div>}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] text-gray-500">Background noise:</span>
-            {['off','low','medium','high'].map(l=>(
+            {['off','low','medium','high','custom'].map(l=>(
               <button key={l} onClick={()=>setNoiseLevel(l)} className={cn('px-2 py-0.5 rounded text-[10px] font-medium transition-colors',noiseLevel===l?'bg-blue-500 text-white':'bg-gray-700/80 text-gray-400 hover:bg-gray-600 hover:text-white')}>
                 {l.charAt(0).toUpperCase()+l.slice(1)}
               </button>
             ))}
-            {noiseLevel!=='off'&&<span className="text-[10px] text-gray-600">{NOISE_LABELS[noiseLevel]}</span>}
+            {noiseLevel==='custom'&&(
+              <input type="number" min="1" max="50000" value={customNoiseCount}
+                onChange={e=>setCustomNoiseCount(Math.max(1,parseInt(e.target.value)||1))}
+                className="w-24 px-2 py-0.5 rounded text-[10px] font-mono bg-gray-800 border border-gray-600 text-white focus:outline-none focus:border-blue-500"
+                placeholder="total logs"/>
+            )}
+            {noiseLevel!=='off'&&noiseLevel!=='custom'&&<span className="text-[10px] text-gray-600">{NOISE_LABELS[noiseLevel]}</span>}
+            {noiseLevel==='custom'&&<span className="text-[10px] text-gray-600">50% Windows · 10% Linux · ~13% each email/firewall/DB</span>}
           </div>
           <div className="flex gap-1.5 ml-auto flex-wrap">
             <Button size="sm" variant="outline" onClick={dl}>⬇ NDJSON</Button>
