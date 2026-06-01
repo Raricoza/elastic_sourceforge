@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 
 // ─── logUtils ────────────────────────────────────────────────────────────────
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -233,7 +233,43 @@ const NORMAL_CMDS=['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe -
 function genEndpointProcess(ts){const susp=Math.random()<0.25,proc=susp?pick(['powershell.exe','cmd.exe','certutil.exe','rundll32.exe']):pick(['chrome.exe','outlook.exe','svchost.exe','explorer.exe']),hn=randomHostname();return JSON.stringify({"@timestamp":formatTimestamp(ts),event:{kind:"event",category:["process"],type:[pick(["start","end"])],action:"process_creation"},host:{name:hn,hostname:hn,ip:[randomPrivateIP()],os:{name:`Windows ${pick(['10','11'])}`}},user:{name:randomUser()},process:{name:proc,pid:rand(100,65535),command_line:susp?pick(SUSPICIOUS_CMDS):pick(NORMAL_CMDS),hash:{sha256:randomHex(64)}},...(susp?{threat:{framework:"MITRE ATT&CK",technique:{id:[`T${rand(1000,1999)}`]}}}:{})});}
 function genEndpointNetwork(ts){const hn=randomHostname();return JSON.stringify({"@timestamp":formatTimestamp(ts),event:{kind:"event",category:["network"],type:["connection"],action:"network_flow"},host:{name:hn,hostname:hn,ip:[randomPrivateIP()]},source:{ip:randomPrivateIP(),port:randomHighPort()},destination:{ip:randomIP(),port:randomPort(),domain:randomDomain()},network:{transport:pick(["tcp","udp"]),direction:"outbound",bytes:rand(64,5000000)},process:{name:pick(['chrome.exe','outlook.exe','svchost.exe','powershell.exe']),pid:rand(100,65535)}});}
 const ALERT_NAMES=['Suspicious PowerShell Execution','Credential Dumping Detected','Lateral Movement via PsExec','Ransomware Behavior Detected','Persistence via Registry Run Key','Process Injection Detected','Data Exfiltration Attempt'];
-function genEndpointAlert(ts){const hn=randomHostname();return JSON.stringify({"@timestamp":formatTimestamp(ts),event:{kind:"alert",category:["malware"],action:"alert_created",severity:rand(1,100)},host:{name:hn,hostname:hn},user:{name:randomUser()},rule:{name:pick(ALERT_NAMES),severity:pick(['critical','high','medium']),risk_score:rand(50,100)},process:{name:pick(['powershell.exe','cmd.exe','rundll32.exe']),command_line:pick(SUSPICIOUS_CMDS)},threat:{framework:"MITRE ATT&CK",tactic:{name:pick(['Execution','Credential Access','Lateral Movement','Exfiltration'])}}});}
+function genEndpointAlert(ts){
+  const hn=randomHostname(),user=randomUser(),ruleName=pick(ALERT_NAMES);
+  const sev=pick(['critical','high','medium','low']);
+  const sevScore={critical:99,high:73,medium:47,low:21};
+  const tactic=pick(['Execution','Credential Access','Lateral Movement','Exfiltration','Defense Evasion']);
+  const tacId={'Execution':'TA0002','Credential Access':'TA0006','Lateral Movement':'TA0008','Exfiltration':'TA0010','Defense Evasion':'TA0005'}[tactic]||'TA0002';
+  const now=new Date().toISOString();
+  return JSON.stringify({
+    '@timestamp':formatTimestamp(ts),
+    event:{kind:'signal',category:['intrusion_detection'],outcome:'success'},
+    kibana:{version:'8.0.0',space_ids:['default'],alert:{
+      uuid:makeUuid(),
+      ancestors:[{id:makeUuid(),type:'event',index:'logs-*',depth:0}],
+      depth:1,
+      reason:`${ruleName} was detected on ${hn} involving user ${user}`,
+      building_block_type:null,
+      rule:{
+        uuid:makeUuid(),rule_id:slugifyRuleId(ruleName),
+        name:ruleName,description:ruleName,
+        category:'Custom Query Rule',consumer:'siem',producer:'siem',rule_type_id:'siem.queryRule',
+        type:'query',version:1,enabled:true,
+        created_at:now,updated_at:now,created_by:'elastic',updated_by:'elastic',
+        tags:[],license:'',author:[],false_positives:[],
+        from:'now-6m',to:'now',language:'kuery',query:'*:*',
+        index:['logs-*','.alerts-security.alerts-default'],
+        risk_score_mapping:[],severity_mapping:[],max_signals:100,
+        references:[],filters:[],exceptions_list:[],
+        threat:[{framework:'MITRE ATT&CK',tactic:{id:tacId,name:tactic,reference:`https://attack.mitre.org/tactics/${tacId}/`},technique:[]}]},
+      severity:sev,risk_score:sevScore[sev],status:'open',workflow_status:'open',
+      original_time:new Date(ts.getTime()-rand(1000,15000)).toISOString(),
+    }},
+    host:{name:hn,hostname:hn,ip:[randomPrivateIP()],os:{name:`Windows ${pick(['10','11'])}`,family:'windows'}},
+    user:{name:user,domain:'CONTOSO'},
+    process:{name:pick(['powershell.exe','cmd.exe','rundll32.exe']),pid:rand(1000,65535),command_line:pick(SUSPICIOUS_CMDS),parent:{name:'explorer.exe'}},
+    threat:{framework:'MITRE ATT&CK',tactic:{id:tacId,name:tactic}},
+  });
+}
 function generateEndpointLogs(count,tr,alertPct=30){const ap=Math.max(0,Math.min(100,alertPct))/100;return generateTimestamps(count,tr).map(ts=>{const r=Math.random();if(r<ap)return genEndpointAlert(ts);const r2=Math.random();return r2<0.57?genEndpointProcess(ts):genEndpointNetwork(ts);});}
 
 // ─── Windows Event Generator ──────────────────────────────────────────────────
@@ -1230,14 +1266,30 @@ const MITRE_TAC={
   'Command and Control':'TA0011','Exfiltration':'TA0010','Impact':'TA0040',
 };
 const makeUuid=()=>[randomHex(8),randomHex(4),randomHex(4),randomHex(4),randomHex(12)].join('-');
+const slugifyRuleId=name=>'demo-'+name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 function makeAlert(ts,{ruleName,severity,riskScore,tactic,technique,techniqueName,host,user,proc,net,extra={}}){
   const tacId=MITRE_TAC[tactic]||'TA0000';
+  const now=new Date().toISOString();
   return{
     '@timestamp':ts.toISOString(),
     event:{kind:'signal',category:['intrusion_detection'],outcome:'success'},
-    kibana:{alert:{
+    kibana:{version:'8.0.0',space_ids:['default'],alert:{
       uuid:makeUuid(),
-      rule:{uuid:makeUuid(),name:ruleName,description:ruleName,category:'Custom Query Rule',consumer:'siem',producer:'siem',rule_type_id:'siem.queryRule',enabled:true,
+      ancestors:[{id:makeUuid(),type:'event',index:'logs-*',depth:0}],
+      depth:1,
+      reason:`${ruleName} was detected on ${host.name} involving user ${user.name}`,
+      building_block_type:null,
+      rule:{
+        uuid:makeUuid(),rule_id:slugifyRuleId(ruleName),
+        name:ruleName,description:ruleName,
+        category:'Custom Query Rule',consumer:'siem',producer:'siem',rule_type_id:'siem.queryRule',
+        type:'query',version:1,enabled:true,
+        created_at:now,updated_at:now,created_by:'elastic',updated_by:'elastic',
+        tags:[],license:'',author:[],false_positives:[],
+        from:'now-6m',to:'now',language:'kuery',query:'*:*',
+        index:['logs-*','.alerts-security.alerts-default'],
+        risk_score_mapping:[],severity_mapping:[],max_signals:100,
+        references:[],filters:[],exceptions_list:[],
         threat:[{framework:'MITRE ATT&CK',tactic:{id:tacId,name:tactic,reference:`https://attack.mitre.org/tactics/${tacId}/`},technique:technique?[{id:technique,name:techniqueName||technique,reference:`https://attack.mitre.org/techniques/${technique.split('.').join('/')}/`}]:[]}],
       },
       severity,risk_score:riskScore,status:'open',workflow_status:'open',
@@ -1317,6 +1369,82 @@ function generateRansomwareScenario(){
     makeAlert(t(420),{ruleName:'Mass File Rename — Ransomware Encryption in Progress',severity:'critical',riskScore:99,tactic:'Impact',technique:'T1486',techniqueName:'Data Encrypted for Impact',host:v2,user:u1,proc:{name:ctx.malwareFile,cmd:`\\\\${v1.name}\\C$\\ProgramData\\${ctx.malwareFile}`,parent:'services.exe'},extra:{file:{name:'Q3_Financials.xlsx.locked',extension:'.locked'},message:`Lateral ransomware: ${rand(800,2000)} files encrypted on ${v2.name}`}}),
   ];
   return{meta:{name:'Ransomware Outbreak',attackerProfile:'Financially motivated threat actor',targetOrg:'Enterprise',description:`Office macro → fileless PowerShell → VSS/backup deletion → Defender disabled → mass encryption (${ctx.malwareFamily}) → EternalBlue SMB spread to second host. ${alerts.length} correlated alerts across 3 MITRE tactics.`,timeRange:{from:t(0),to:t(420)}},ctx,alerts};
+}
+
+// ─── ML Seed Data Generators ──────────────────────────────────────────────────
+const THREAT_ACTOR_LOCATIONS=[
+  {ip:'185.220.101.12',country_iso_code:'RU',country_name:'Russia',city_name:'Moscow',location:{lat:55.75,lon:37.61}},
+  {ip:'103.216.220.10',country_iso_code:'CN',country_name:'China',city_name:'Beijing',location:{lat:39.91,lon:116.39}},
+  {ip:'5.62.18.32',country_iso_code:'IR',country_name:'Iran',city_name:'Tehran',location:{lat:35.69,lon:51.42}},
+  {ip:'175.45.176.3',country_iso_code:'KP',country_name:'North Korea',city_name:'Pyongyang',location:{lat:39.01,lon:125.75}},
+  {ip:'5.2.70.149',country_iso_code:'RO',country_name:'Romania',city_name:'Bucharest',location:{lat:44.43,lon:26.09}},
+];
+function generateImpossibleTravelEvents(){
+  const now=Date.now();
+  const user='jsmith',domain='CONTOSO',srv='AUTH-SRV-01';
+  // Normal baseline: South Africa (Johannesburg)
+  const zaIp='196.25.166.50';
+  const zaGeo={country_iso_code:'ZA',country_name:'South Africa',city_name:'Johannesburg',location:{lat:-26.20,lon:28.04}};
+  // Anomaly: pick a random known threat actor location
+  const threat=pick(THREAT_ACTOR_LOCATIONS);
+  const mkAuth=(ts,ip,geo)=>({
+    '@timestamp':ts,
+    event:{category:['authentication'],outcome:'success',type:['start'],action:'logged-in'},
+    user:{name:user,domain},
+    source:{ip,geo},
+    host:{name:srv,hostname:srv,os:{name:'Windows Server 2019',family:'windows'}},
+    winlog:{event_id:4624,channel:'Security',provider_name:'Microsoft-Windows-Security-Auditing',
+      event_data:{LogonType:'3',AuthenticationPackageName:ip===threat.ip?'NTLM':'Kerberos',
+        TargetUserName:user,TargetDomainName:domain,IpAddress:ip}},
+    agent:{type:'winlogbeat'},
+    data_stream:{type:'logs',dataset:'windows.security',namespace:'default'},
+  });
+  const docs=[];
+  // Training baseline: 40 normal logins from Johannesburg over 7 days
+  for(let i=0;i<40;i++){
+    docs.push(mkAuth(new Date(now-rand(0,7*24*3600*1000)).toISOString(),zaIp,zaGeo));
+  }
+  // Anomaly pair: Johannesburg login, then threat actor location 10 minutes later
+  const t0=new Date(now-30*60000);
+  docs.push(mkAuth(new Date(t0.getTime()-10*60000).toISOString(),zaIp,zaGeo));
+  docs.push(mkAuth(t0.toISOString(),threat.ip,threat));
+  return{
+    meta:{name:'Impossible Travel',index:'logs-windows.security-default',docCount:docs.length,
+      description:`Seeds 40 normal logins from Johannesburg (ZA) over 7 days for jsmith, then: Johannesburg login → ${threat.city_name}, ${threat.country_name} 10 minutes later. The ML job flags the ${threat.country_name} source IP as anomalous.`},
+    docs,
+  };
+}
+function generateUnusualLoginTimeEvents(){
+  const now=Date.now();
+  const users=['jsmith','mjones','sbrown','kwilson'],domain='CONTOSO',ip='192.168.10.50';
+  const hosts=['AUTH-SRV-01','AUTH-SRV-02','DC-01'];
+  const mkAuth=(ts,uname)=>({
+    '@timestamp':ts,
+    event:{category:['authentication'],outcome:'success',type:['start'],action:'logged-in'},
+    user:{name:uname,domain},
+    source:{ip},
+    host:{name:pick(hosts),hostname:pick(hosts),os:{name:'Windows Server 2019',family:'windows'}},
+    winlog:{event_id:4624,channel:'Security',provider_name:'Microsoft-Windows-Security-Auditing',
+      event_data:{LogonType:'3',AuthenticationPackageName:'Kerberos',
+        TargetUserName:uname,TargetDomainName:domain,IpAddress:ip}},
+    agent:{type:'winlogbeat'},
+    data_stream:{type:'logs',dataset:'windows.security',namespace:'default'},
+  });
+  const docs=[];
+  for(let i=0;i<120;i++){
+    const dayOff=rand(1,7)*24*3600*1000;
+    const hourOff=(rand(8,17)+Math.random())*3600*1000;
+    docs.push(mkAuth(new Date(now-dayOff+hourOff).toISOString(),pick(users)));
+  }
+  const today=new Date();today.setUTCHours(0,0,0,0);
+  [[2,14],[2,47],[3,31],[4,5]].forEach(([h,m])=>{
+    docs.push(mkAuth(new Date(today.getTime()+(h*3600+m*60)*1000).toISOString(),'jsmith'));
+  });
+  return{
+    meta:{name:'Unusual Login Time',index:'logs-windows.security-default',docCount:docs.length,
+      description:`Seeds 120 business-hours logins (8AM–6PM) for 4 users over 7 days, then 4 logins for jsmith at 02:14, 02:47, 03:31, and 04:05 UTC today. The security_auth ML job v2_rare_hour_for_a_user flags the anomalous hours.`},
+    docs,
+  };
 }
 
 function generateScenarioNoise(level,tr=120,customCount=1000){
@@ -1502,13 +1630,60 @@ function generateScenarioCoreLogs(ctx, timeRange){
 const STORAGE_KEY='elastic_config_forge';
 function loadConfig(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');}catch{return null;}}
 function saveConfig(c){localStorage.setItem(STORAGE_KEY,JSON.stringify(c));}
-function buildHeaders(cfg){return {'Content-Type':'application/x-ndjson','Authorization':`ApiKey ${cfg.apiKey}`};}
+function buildHeaders(cfg){
+  const auth=cfg.authMode==='basic'
+    ?`Basic ${btoa(`${cfg.username||''}:${cfg.password||''}`)}`
+    :`ApiKey ${cfg.apiKey||''}`;
+  return{'Content-Type':'application/x-ndjson','Authorization':auth};
+}
+function curlAuthFlag(cfg){
+  return cfg.authMode==='basic'
+    ?`-u "${cfg.username}:${cfg.password}"`
+    :`-H "Authorization: ApiKey ${cfg.apiKey}"`;
+}
 // Route all ES requests through the Vite dev-server proxy (/es-proxy) so the
 // browser never makes a cross-origin request — eliminates CORS failures and
 // allows self-signed certificates on local clusters.
 function fetchES(cfg,path,opts={}){
   const headers={...buildHeaders(cfg),'X-ES-URL':cfg.url.replace(/\/$/,'')};
   return fetch(`/es-proxy${path}`,{...opts,headers:{...headers,...(opts.headers||{})}});
+}
+function fetchKibana(cfg,path,opts={}){
+  const base=(cfg.kibanaUrl||'').replace(/\/$/,'');
+  const headers={...buildHeaders(cfg),'Content-Type':'application/json','kbn-xsrf':'true','X-Kibana-URL':base};
+  return fetch(`/kibana-proxy${path}`,{...opts,headers:{...headers,...(opts.headers||{})}});
+}
+// Creates lightweight disabled detection rules in Kibana so that alert rule links work.
+// Uses stable rule_id slugs so repeated pushes don't create duplicates.
+// Returns Map<ruleName, kibanaId> or null if no Kibana URL configured.
+async function ensureDemoRules(cfg,rules){
+  if(!cfg?.kibanaUrl)return null;
+  // Deduplicate by name
+  const unique=[...new Map(rules.map(r=>[r.name,r])).values()];
+  const body=unique.map(r=>({
+    rule_id:slugifyRuleId(r.name),name:r.name,description:'Demo rule — created by elastic-demo-forge',
+    type:'query',query:'*',language:'kuery',index:['.alerts-security.alerts-default'],
+    severity:r.severity||'high',risk_score:r.riskScore||73,enabled:false,
+  }));
+  const nameToId=new Map();
+  try{
+    const res=await fetchKibana(cfg,'/api/detection_engine/rules/_bulk_create',{method:'POST',body:JSON.stringify(body)});
+    const d=await res.json().catch(()=>({}));
+    // Collect successfully created rules
+    (d.created||[]).forEach(r=>{if(r.name&&r.id)nameToId.set(r.name,r.id);});
+    // For rules that already exist (409), fetch each by rule_id
+    const errored=(d.errors||[]).filter(e=>e.error?.status_code===409||e.error?.statusCode===409||e.rule_id);
+    await Promise.all(errored.map(async e=>{
+      const ruleId=e.rule_id||slugifyRuleId(e.rule?.name||'');
+      if(!ruleId)return;
+      try{
+        const r2=await fetchKibana(cfg,`/api/detection_engine/rules?rule_id=${encodeURIComponent(ruleId)}`);
+        const d2=await r2.json().catch(()=>({}));
+        if(d2.name&&d2.id)nameToId.set(d2.name,d2.id);
+      }catch{}
+    }));
+  }catch{}
+  return nameToId;
 }
 // Send bulk lines in chunks with a pause between each batch so the cluster
 // isn't flooded. chunkSize is docs (not lines), pauseMs is the inter-batch delay.
@@ -1656,7 +1831,7 @@ const VENDOR_INGEST={
       return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'microsoft_exchange_server.log',module:'microsoft_exchange_server',category:['email'],original:l},agent:agentField('filebeat'),data_stream:dsField('microsoft_exchange_server.log')};
     }
   },
-  endpoint:{getIndex(l){try{const o=JSON.parse(l);if(o.event?.kind==='alert')return'logs-endpoint.alerts-default';if((o.event?.category||[]).includes('network'))return'logs-endpoint.events.network-default';}catch{}return'logs-endpoint.events.process-default';},toDoc(l){try{const o=JSON.parse(l);const cats=o.event?.category||[];let ds='endpoint.events.process';if(o.event?.kind==='alert')ds='endpoint.alerts';else if(cats.includes('network'))ds='endpoint.events.network';return{...o,agent:{...o.agent,type:'endpoint'},data_stream:dsField(ds),event:{...o.event,dataset:ds,module:'endpoint'}};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'endpoint.events.process'},agent:agentField('elastic_agent'),data_stream:dsField('endpoint.events.process')};}}},
+  endpoint:{getIndex(l){try{const o=JSON.parse(l);if(o.event?.kind==='signal')return'.alerts-security.alerts-default';if((o.event?.category||[]).includes('network'))return'logs-endpoint.events.network-default';}catch{}return'logs-endpoint.events.process-default';},toDoc(l){try{const o=JSON.parse(l);if(o.event?.kind==='signal')return o;const cats=o.event?.category||[];const ds=cats.includes('network')?'endpoint.events.network':'endpoint.events.process';return{...o,agent:{...o.agent,type:'endpoint'},data_stream:dsField(ds),event:{...o.event,dataset:ds,module:'endpoint'}};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'endpoint.events.process'},agent:agentField('elastic_agent'),data_stream:dsField('endpoint.events.process')};}}},
   windows:{
     getIndex(l){try{const o=JSON.parse(l),ch=o.winlog?.channel||'';if(ch.includes('PowerShell'))return'logs-windows.powershell_operational-default';if(ch==='Security')return'logs-windows.security-default';if(ch==='Application')return'logs-windows.application-default';if(ch.includes('AppLocker'))return'logs-windows.applocker-default';return'logs-windows.system-default';}catch{return'logs-windows.system-default';}},
     toDoc(l){try{const o=JSON.parse(l);const ch=o.winlog?.channel||'System';let ds='windows.system';if(ch.includes('PowerShell'))ds='windows.powershell_operational';else if(ch==='Security')ds='windows.security';else if(ch==='Application')ds='windows.application';else if(ch.includes('AppLocker'))ds='windows.applocker';return{...o,event:{...o.event,dataset:ds,module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField(ds)};}catch{return{'@timestamp':new Date().toISOString(),message:l,event:{dataset:'windows.system',module:'windows'},agent:agentField('winlogbeat'),data_stream:dsField('windows.system')};}}
@@ -2105,23 +2280,283 @@ const SCENARIOS=[
   {id:'ransomware',name:'Ransomware Outbreak',description:'Office macro → fileless PowerShell → VSS/backup deletion → Defender disabled → mass encryption → EternalBlue SMB spread. Generates Kibana security alerts for Attack Discovery.',severity:'critical',type:'apt',tactics:['Initial Access','Execution','Defense Evasion','Impact','Lateral Movement'],generator:generateRansomwareScenario},
 ];
 
+const ML_MODULES=[
+  {id:'security_auth',label:'Authentication Anomalies',description:'Impossible travel, unusual login hours, rare users and source IPs.',primary:true,icon:'🔐'},
+  {id:'security_linux_network',label:'Linux Network Anomalies',description:'Unusual outbound connections from Linux hosts.',icon:'🐧'},
+  {id:'security_windows_network',label:'Windows Network Anomalies',description:'Unusual network activity from Windows endpoints.',icon:'🪟'},
+  {id:'security_linux_system',label:'Linux System Anomalies',description:'Unusual processes and user activity on Linux hosts.',icon:'⚙️'},
+  {id:'network_traffic_analysis',label:'Network Traffic Analysis',description:'Anomalous traffic patterns from firewall and network logs.',icon:'🌐'},
+];
+
+const ALERT_EMAIL={connectorId:'',to:''}; // defaults empty — configured via Connect ES dialog
+async function sendAlertEmails(cfg,alerts){
+  const connId=cfg?.alertConnectorId;
+  const emailTo=cfg?.alertEmail;
+  if(!cfg?.kibanaUrl||!connId||!emailTo)return;
+  await Promise.allSettled(alerts.map(a=>{
+    const rule=a.kibana.alert.rule;
+    const sev=(a.kibana.alert.severity||'').toUpperCase();
+    const ts=new Date(a['@timestamp']).toLocaleString();
+    const host=a.host?.name||'unknown';
+    const user=a.user?.name||'unknown';
+    const tactic=rule.threat?.[0]?.tactic?.name||'';
+    const technique=rule.threat?.[0]?.technique?.[0]?.id||'';
+    return fetchKibana(cfg,`/api/actions/connector/${connId}/_execute`,{
+      method:'POST',
+      body:JSON.stringify({params:{
+        to:[emailTo],
+        subject:`[Elastic Security] ${sev}: ${rule.name}`,
+        message:[
+          `ALERT: ${rule.name}`,
+          ``,
+          `Severity:   ${sev}`,
+          `Risk Score: ${a.kibana.alert.risk_score}`,
+          `Time:       ${ts}`,
+          `Host:       ${host}`,
+          `User:       ${user}`,
+          tactic?`Tactic:     ${tactic}${technique?' ('+technique+')':''}`:null,
+          ``,
+          `Rule: ${rule.name}`,
+          `Description: ${rule.description||rule.name}`,
+        ].filter(l=>l!==null).join('\n'),
+      }}),
+    });
+  }));
+}
+
+async function sendScenarioEmails(cfg,scenarioName,events){
+  const connId=cfg?.alertConnectorId;
+  const emailTo=cfg?.alertEmail;
+  if(!cfg?.kibanaUrl||!connId||!emailTo)return;
+  const alertEvents=events.filter(e=>e.source==='Elastic Security Alert');
+  if(!alertEvents.length)return;
+  await Promise.allSettled(alertEvents.map(e=>{
+    const sev=(e.severity||'unknown').toUpperCase();
+    const ts=new Date(e.timestamp).toLocaleString();
+    return fetchKibana(cfg,`/api/actions/connector/${connId}/_execute`,{
+      method:'POST',
+      body:JSON.stringify({params:{
+        to:[emailTo],
+        subject:`[Elastic Security] ${sev}: ${e.description}`,
+        message:[
+          `ALERT: ${e.description}`,
+          ``,
+          `Severity:  ${sev}`,
+          `Time:      ${ts}`,
+          e.tactic?`Tactic:    ${e.tactic}${e.technique?' ('+e.technique+')':''}`:null,
+          `Source:    ${e.source}`,
+          ``,
+          `Scenario:  ${scenarioName}`,
+        ].filter(l=>l!==null).join('\n'),
+      }}),
+    });
+  }));
+}
+
 // ─── UI Components ────────────────────────────────────────────────────────────
 const cn=(...args)=>args.filter(Boolean).join(' ');
 
 function Badge({children,className}){return <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border",className)}>{children}</span>;}
 function Button({children,onClick,disabled,className,size='md',variant='default'}){const base="inline-flex items-center justify-center font-medium rounded transition-all focus:outline-none";const sizes={sm:"h-7 px-2.5 text-xs",md:"h-9 px-4 text-sm"};const variants={default:"bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50",outline:"border border-gray-600 text-gray-300 hover:border-gray-400 hover:text-white disabled:opacity-50",ghost:"text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-50"};return <button onClick={onClick} disabled={disabled} className={cn(base,sizes[size],variants[variant],className)}>{children}</button>;}
 
+// ML Setup Card
+// ML jobs created directly via the Elasticsearch ML API (no Kibana modules needed)
+const DEMO_ML_JOBS=[
+  {
+    id:'demo_rare_source_ip',
+    label:'Rare Source IP per User',
+    scenario:'Impossible Travel',
+    ruleName:'Impossible Travel — Rare Source IP (ML)',
+    ruleSlug:'demo-ml-impossible-travel',
+    anomalyThreshold:50,
+    jobConfig:{
+      description:'Detects users authenticating from rare source IPs — baseline is South Africa, anomaly is a known threat actor location (Russia, China, Iran, North Korea, Romania)',
+      analysis_config:{bucket_span:'15m',
+        detectors:[{function:'rare',by_field_name:'source.ip',partition_field_name:'user.name'}],
+        influencers:['user.name','source.ip','source.geo.country_name']},
+      data_description:{time_field:'@timestamp'},
+    },
+    datafeedConfig:{
+      indices:['logs-windows.security-default','logs-*'],
+      query:{bool:{filter:[{term:{'event.category':'authentication'}},{term:{'event.outcome':'success'}}]}},
+    },
+  },
+  {
+    id:'demo_unusual_login_hour',
+    label:'Unusual Login Hour per User',
+    scenario:'Unusual Login Time',
+    ruleName:'Unusual Login Hour per User (ML)',
+    ruleSlug:'demo-ml-unusual-login-hour',
+    anomalyThreshold:50,
+    jobConfig:{
+      description:'Detects users logging in at anomalous hours — surfaces Unusual Login Time anomalies',
+      analysis_config:{bucket_span:'1h',
+        detectors:[{function:'time_of_day',by_field_name:'user.name'}],
+        influencers:['user.name']},
+      data_description:{time_field:'@timestamp'},
+    },
+    datafeedConfig:{
+      indices:['logs-windows.security-default','logs-*'],
+      query:{bool:{filter:[{term:{'event.category':'authentication'}},{term:{'event.outcome':'success'}}]}},
+    },
+  },
+];
+async function createMLJob(cfg,job){
+  const jh={'Content-Type':'application/json'};
+  const start=new Date(Date.now()-7*24*3600*1000).toISOString();
+  // Create job (ignore 400 = already exists)
+  let r=await fetchES(cfg,`/_ml/anomaly_detectors/${job.id}`,{method:'PUT',headers:jh,body:JSON.stringify(job.jobConfig)});
+  if(!r.ok&&r.status!==400){const d=await r.json();throw new Error(d.error?.reason||d.message||`job create HTTP ${r.status}`);}
+  // Create datafeed (ignore 400 = already exists)
+  const feed={job_id:job.id,...job.datafeedConfig};
+  r=await fetchES(cfg,`/_ml/datafeeds/datafeed-${job.id}`,{method:'PUT',headers:jh,body:JSON.stringify(feed)});
+  if(!r.ok&&r.status!==400){const d=await r.json();throw new Error(d.error?.reason||d.message||`datafeed create HTTP ${r.status}`);}
+  // Open job
+  r=await fetchES(cfg,`/_ml/anomaly_detectors/${job.id}/_open`,{method:'POST',headers:jh,body:'{}'});
+  // Start datafeed from 7 days ago to process historical seed data
+  r=await fetchES(cfg,`/_ml/datafeeds/datafeed-${job.id}/_start`,{method:'POST',headers:jh,body:JSON.stringify({start})});
+  if(!r.ok){const d=await r.json();throw new Error(d.error?.reason||d.message||`datafeed start HTTP ${r.status}`);}
+  // Create Kibana ML detection rule with email action (silent if Kibana not configured or rule exists)
+  if(cfg?.kibanaUrl&&job.ruleName){
+    const connId=cfg.alertConnectorId;
+    const emailTo=cfg.alertEmail;
+    const ruleBody={
+      rule_id:job.ruleSlug,name:job.ruleName,description:job.jobConfig.description,
+      type:'machine_learning',machine_learning_job_id:[job.id],
+      anomaly_threshold:job.anomalyThreshold||50,
+      severity:'high',risk_score:73,enabled:true,
+      from:'now-6m',to:'now',interval:'5m',
+      ...(connId&&emailTo?{actions:[{
+        id:connId,action_type_id:'.email',
+        params:{
+          to:[emailTo],
+          subject:`[Elastic ML] Anomaly detected: {{context.rule.name}}`,
+          message:`ML anomaly detected.\n\nRule: {{context.rule.name}}\nJob: ${job.id}\nThreshold: ${job.anomalyThreshold||50}\n\nCheck Kibana → Security → Alerts for details.`,
+        },
+        frequency:{summary:false,throttle:null,notifyWhen:'onActiveAlert'},
+      }]}:{}),
+    };
+    const kr=await fetchKibana(cfg,'/api/detection_engine/rules',{method:'POST',body:JSON.stringify(ruleBody)});
+    if(!kr.ok&&kr.status!==409){const kd=await kr.json().catch(()=>({}));console.warn('ML rule create:',kd.message||kr.status);}
+  }
+}
+function MLSetupCard({elasticConfig}){
+  const [selected,setSelected]=useState(new Set(DEMO_ML_JOBS.map(j=>j.id)));
+  const [running,setRunning]=useState(false);
+  const [results,setResults]=useState(null);
+  const toggle=id=>setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
+  const hasES=!!(elasticConfig?.url);
+  const setup=async()=>{
+    setRunning(true);setResults(null);
+    const res={};
+    for(const job of DEMO_ML_JOBS.filter(j=>selected.has(j.id))){
+      try{await createMLJob(elasticConfig,job);res[job.id]={ok:true};}
+      catch(e){res[job.id]={ok:false,error:e.message};}
+    }
+    setResults(res);setRunning(false);
+  };
+  return(
+    <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 overflow-hidden">
+      <div className="p-4 border-b border-purple-500/20">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-lg">🤖</span>
+          <h3 className="font-semibold text-sm text-white">ML Anomaly Detection Setup</h3>
+        </div>
+        <p className="text-xs text-gray-400">Creates anomaly detection jobs directly via the Elasticsearch ML API. No Kibana modules required. Push seed data first, then set up jobs.</p>
+      </div>
+      <div className="p-4 space-y-3">
+        {DEMO_ML_JOBS.map(job=>(
+          <label key={job.id} className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={selected.has(job.id)} onChange={()=>toggle(job.id)} className="mt-0.5 accent-purple-500"/>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-200 flex-wrap">
+                {job.label}
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-400">→ {job.scenario}</span>
+              </div>
+              <p className="text-[10px] text-gray-500 mt-0.5 font-mono">{job.id}</p>
+            </div>
+          </label>
+        ))}
+      </div>
+      {results&&(
+        <div className="px-4 pb-3 space-y-1">
+          {DEMO_ML_JOBS.filter(j=>results[j.id]).map(j=>(
+            <div key={j.id} className={cn('flex items-center gap-2 text-xs px-2 py-1 rounded',results[j.id].ok?'text-green-400 bg-green-500/10':'text-red-400 bg-red-500/10')}>
+              <span>{results[j.id].ok?'✓':'✗'}</span>
+              <span className="font-mono text-[10px]">{j.id}</span>
+              {results[j.id].ok?<span className="text-gray-400">— job created, datafeed started</span>:<span>{results[j.id].error}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="px-4 pb-4">
+        {!hasES
+          ?<div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">⚠ Configure Elasticsearch connection first.</div>
+          :<Button onClick={setup} disabled={running||selected.size===0} className="w-full">{running?'Creating ML jobs…':'Create ML Jobs'}</Button>}
+      </div>
+    </div>
+  );
+}
+
+// ML Scenario Card (Impossible Travel / Unusual Login Time)
+function MLScenarioCard({title,icon,generator,elasticConfig}){
+  const [pushing,setPushing]=useState(false);
+  const [result,setResult]=useState(null);
+  const data=useMemo(()=>generator(),[]);
+  const push=async()=>{
+    if(!elasticConfig?.url){alert('No Elasticsearch config found');return;}
+    setPushing(true);setResult(null);
+    try{
+      const lines=[];
+      data.docs.forEach(doc=>{
+        lines.push(JSON.stringify({create:{_index:data.meta.index}}));
+        lines.push(JSON.stringify(doc));
+      });
+      const d=await bulkSend(elasticConfig,lines);
+      const errs=d.items?.filter(i=>i.create?.error||i.index?.error)||[];
+      setResult({ok:true,count:data.docs.length,errors:errs.length,firstError:errs[0]?.create?.error?.reason});
+    }catch(e){setResult({ok:false,error:e.message});}
+    finally{setPushing(false);}
+  };
+  return(
+    <div className="rounded-xl border border-gray-700 bg-gray-900 overflow-hidden">
+      <div className="p-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-purple-500/15 flex items-center justify-center text-xl shrink-0">{icon}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="font-semibold text-sm text-white">{title}</h3>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-400">ML Scenario</span>
+            </div>
+            <p className="text-xs text-gray-400 mb-2 leading-relaxed">{data.meta.description}</p>
+            <p className="text-[10px] text-gray-500">→ {data.meta.docCount} events · <span className="font-mono">{data.meta.index}</span></p>
+          </div>
+        </div>
+        {result&&(
+          <div className={cn('mt-3 flex items-center gap-2 p-2 rounded-lg text-xs',result.ok&&result.errors===0?'bg-green-500/10 border border-green-500/30 text-green-400':'bg-amber-500/10 border border-amber-500/30 text-amber-300')}>
+            {result.ok?(result.errors===0?`✓ Pushed ${result.count} events`:`⚠ Pushed with ${result.errors} errors: ${result.firstError}`):`✗ ${result.error}`}
+          </div>
+        )}
+        <div className="mt-3 flex items-center gap-2">
+          <Button onClick={push} disabled={pushing||!elasticConfig?.url} size="sm">{pushing?'Pushing…':'Push Seed Data'}</Button>
+          <span className="text-[10px] text-gray-500">Run ML Setup first to enable detection</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Config Dialog
 function ConfigDialog({open,onClose,onSave}){
-  const [cfg,setCfg]=useState({url:'',apiKey:'',kibanaUrl:''});
+  const [cfg,setCfg]=useState({url:'',authMode:'apiKey',apiKey:'',username:'',password:'',kibanaUrl:'',alertEmail:'',alertConnectorId:''});
   const [status,setStatus]=useState(null);
   const [err,setErr]=useState('');
   const [showCurl,setShowCurl]=useState(false);
-  useEffect(()=>{if(open){const s=loadConfig();if(s)setCfg({url:s.url||'',apiKey:s.apiKey||'',kibanaUrl:s.kibanaUrl||''});}},[open]);
+  useEffect(()=>{if(open){const s=loadConfig();if(s)setCfg({url:s.url||'',authMode:s.authMode||(s.apiKey?'apiKey':'apiKey'),apiKey:s.apiKey||'',username:s.username||'',password:s.password||'',kibanaUrl:s.kibanaUrl||'',alertEmail:s.alertEmail||'',alertConnectorId:s.alertConnectorId||''});}},[open]);
   const upd=(k,v)=>setCfg(c=>({...c,[k]:v}));
-  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetchES(cfg,'/_cluster/health',{headers:{'Content-Type':'application/json'}});if(r.ok){const d=await r.json();setStatus('ok');setErr(`Cluster: ${d.cluster_name} — ${d.status}`);}else{setStatus('error');setErr(`HTTP ${r.status}: ${r.statusText}`);}}catch(e){setStatus('error');setErr(e.message);}};
+  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetchES(cfg,'/_cluster/health',{headers:{'Content-Type':'application/json'}});if(r.ok){const d=await r.json();setStatus('ok');setErr(`Cluster: ${d.cluster_name} — ${d.status}`);}else{let detail=`HTTP ${r.status}`;try{const body=await r.json();if(body?.error)detail=body.error;}catch{}setStatus('error');setErr(detail);}}catch(e){setStatus('error');setErr(e.message);}};
   const save=()=>{saveConfig(cfg);onSave(cfg);onClose();};
-  const curl=`curl -k -H "Authorization: ApiKey ${cfg.apiKey}" "${cfg.url.replace(/\/$/,'')}/_cluster/health?pretty"`;
+  const curl=`curl -k ${curlAuthFlag(cfg)} "${cfg.url.replace(/\/$/,'')}/_cluster/health?pretty"`;
   if(!open)return null;
   return(
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -2132,12 +2567,50 @@ function ConfigDialog({open,onClose,onSave}){
           <button onClick={onClose} className="ml-auto text-gray-400 hover:text-white">✕</button>
         </div>
         <div className="p-5 space-y-4">
-          {[['Cluster URL','url','https://my-cluster.es.io:9200'],['API Key','apiKey','Base64-encoded API key'],['Kibana URL (optional)','kibanaUrl','https://my-cluster.kb.io:5601']].map(([label,key,ph])=>(
-            <div key={key} className="space-y-1.5">
-              <label className="text-xs text-gray-400 font-medium">{label}</label>
-              <input type={key==='apiKey'?'password':'text'} value={cfg[key]} onChange={e=>upd(key,e.target.value)} placeholder={ph} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+          <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 font-medium">Cluster URL</label>
+            <input type="text" value={cfg.url} onChange={e=>upd('url',e.target.value)} placeholder="http://10.0.0.5:9200 or https://my-cluster:9200" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 font-medium">Auth Method</label>
+            <div className="flex gap-2">
+              {[['apiKey','API Key'],['basic','Basic Auth']].map(([val,label])=>(
+                <button key={val} onClick={()=>upd('authMode',val)} className={`flex-1 h-8 text-xs font-medium rounded-lg border transition-all ${cfg.authMode===val?'bg-blue-600 border-blue-500 text-white':'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white'}`}>{label}</button>
+              ))}
             </div>
-          ))}
+          </div>
+          {cfg.authMode==='apiKey'?(
+            <div className="space-y-1.5">
+              <label className="text-xs text-gray-400 font-medium">API Key</label>
+              <input type="password" value={cfg.apiKey} onChange={e=>upd('apiKey',e.target.value)} placeholder="Base64-encoded API key" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            </div>
+          ):(
+            <>
+              <div className="space-y-1.5">
+                <label className="text-xs text-gray-400 font-medium">Username</label>
+                <input type="text" value={cfg.username} onChange={e=>upd('username',e.target.value)} placeholder="elastic" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs text-gray-400 font-medium">Password</label>
+                <input type="password" value={cfg.password} onChange={e=>upd('password',e.target.value)} placeholder="Password" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+              </div>
+            </>
+          )}
+          <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 font-medium">Kibana URL (optional)</label>
+            <input type="text" value={cfg.kibanaUrl} onChange={e=>upd('kibanaUrl',e.target.value)} placeholder="https://my-cluster.kb.io:5601" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+          </div>
+          <div className="border-t border-gray-700 pt-4 space-y-3">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Alert Notifications (optional)</p>
+            <div className="space-y-1.5">
+              <label className="text-xs text-gray-400 font-medium">Alert Email Address</label>
+              <input type="email" value={cfg.alertEmail} onChange={e=>upd('alertEmail',e.target.value)} placeholder="security@company.com" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-gray-400 font-medium">Email Connector ID</label>
+              <input type="text" value={cfg.alertConnectorId} onChange={e=>upd('alertConnectorId',e.target.value)} placeholder="UUID from Stack Management → Connectors" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            </div>
+          </div>
           {status==='ok'&&<div className="flex gap-2 p-2.5 rounded-lg bg-green-500/10 border border-green-500/30 text-xs text-green-400">✓ Connected! {err}</div>}
           {status==='error'&&err==='CORS_ERROR'&&(
             <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 space-y-2">
@@ -2148,9 +2621,9 @@ function ConfigDialog({open,onClose,onSave}){
             </div>
           )}
           {status==='error'&&err!=='CORS_ERROR'&&<div className="flex gap-2 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">✗ {err||'Connection failed'}</div>}
-          {status===null&&<div className="flex gap-2 p-2.5 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">ℹ Elastic Cloud blocks browser connections (CORS). Save config and use curl or NDJSON download to ingest logs.</div>}
+          {status===null&&<div className="flex gap-2 p-2.5 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">ℹ Requests are proxied via Vite dev server — works with HTTP, HTTPS, and self-signed certs.</div>}
           <div className="flex gap-2 pt-1">
-            <Button variant="outline" onClick={test} disabled={!cfg.url||!cfg.apiKey||status==='testing'} className="flex-1">{status==='testing'?'Testing…':'Test Connection'}</Button>
+            <Button variant="outline" onClick={test} disabled={!cfg.url||(cfg.authMode==='apiKey'?!cfg.apiKey:!cfg.username||!cfg.password)||status==='testing'} className="flex-1">{status==='testing'?'Testing…':'Test Connection'}</Button>
             <Button onClick={save} disabled={!cfg.url} className="flex-1">Save Config</Button>
           </div>
         </div>
@@ -2488,11 +2961,18 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
     if(!elasticConfig?.url){alert('No Elasticsearch config found');return;}
     setPushing(true);setPushResult(null);
     try{
+      // Resolve real Kibana rule IDs so clicking rule names in Security → Alerts works
+      const ruleMap=await ensureDemoRules(elasticConfig,alerts.map(a=>({
+        name:a.kibana.alert.rule.name,severity:a.kibana.alert.severity,riskScore:a.kibana.alert.risk_score,
+      })));
       const bulkLines=[];
       // 1. Attack alerts → .alerts-security.alerts-default
       alerts.forEach(a=>{
+        const doc=ruleMap?.has(a.kibana.alert.rule.name)
+          ?{...a,kibana:{...a.kibana,alert:{...a.kibana.alert,rule:{...a.kibana.alert.rule,uuid:ruleMap.get(a.kibana.alert.rule.name)}}}}
+          :a;
         bulkLines.push(JSON.stringify({create:{_index:'.alerts-security.alerts-default'}}));
-        bulkLines.push(JSON.stringify(a));
+        bulkLines.push(JSON.stringify(doc));
       });
       // 2. Scenario-correlated logs (real IOCs — firewall + endpoint)
       const coreLogs=generateScenarioCoreLogs(ctx,meta.timeRange);
@@ -2517,11 +2997,13 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
       const d=await bulkSend(elasticConfig,bulkLines);
       const errs=d.items?.filter(i=>i.create?.error||i.index?.error)||[];
       setPushResult({alerts:alerts.length,core:coreCount,noise:noiseCount,errors:errs.length,firstError:errs[0]?.create?.error?.reason||errs[0]?.index?.error?.reason});
+      // Fire one email per alert (silent — never blocks or fails the push)
+      sendAlertEmails(elasticConfig,alerts);
     }catch(e){setPushResult({error:e.message});}
     finally{setPushing(false);}
   };
 
-  const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  -H "Authorization: ApiKey ${elasticConfig.apiKey}" \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @apt-alerts.ndjson`:'';
+  const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  ${curlAuthFlag(elasticConfig)} \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @apt-alerts.ndjson`:'';
 
   const dl=()=>{
     const coreLogs=generateScenarioCoreLogs(ctx,meta.timeRange);
@@ -2599,6 +3081,7 @@ function APTScenarioViewer({scenario,data,elasticConfig}){
             {elasticConfig?.url&&<><Button size="sm" variant="outline" onClick={()=>setShowCurl(!showCurl)}>$ curl</Button><Button size="sm" onClick={push} disabled={pushing}>{pushing?'Pushing…':'⬆ Push to ES'}</Button></>}
           </div>
         </div>
+        {elasticConfig?.url&&!elasticConfig?.kibanaUrl&&<p className="text-[10px] text-gray-500 mt-1">Set a Kibana URL in Connect ES to enable clickable rule links in Security → Alerts.</p>}
         {showCurl&&curl&&<pre className="bg-gray-950 rounded-lg p-3 text-xs font-mono text-gray-300 whitespace-pre-wrap">{curl}</pre>}
         {pushResult&&!pushResult.error&&(
           <div className={cn('flex items-center gap-2 p-2 rounded-lg text-xs',pushResult.errors>0?'bg-amber-500/10 border border-amber-500/30 text-amber-300':'bg-green-500/10 border border-green-500/30 text-green-400')}>
@@ -2663,10 +3146,11 @@ function ScenarioViewer({scenario,events,elasticConfig}){
       const lines=events.map(e=>{let doc;try{doc=JSON.parse(e.log);}catch{doc={message:e.log};}if(!doc['@timestamp'])doc['@timestamp']=e.timestamp.toISOString();let idx='logs-endpoint.events.process-default';if(e.source==='Elastic Security Alert')idx='.alerts-security.alerts-default';else if(e.source==='Fortinet FortiGate')idx='logs-fortinet.fortigate.utm-default';else if(e.source==='Windows Security')idx='logs-windows.security-default';return`${JSON.stringify({create:{_index:idx}})}\n${JSON.stringify(doc)}`;});
       await bulkSend(elasticConfig,lines);
       alert(`✓ Pushed ${events.length} scenario events`);
+      sendScenarioEmails(elasticConfig,scenario.name,events);
     }catch(e){alert(`Push failed: ${e.message}`);}
     finally{setPushing(false);}
   };
-  const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  -H "Authorization: ApiKey ${elasticConfig.apiKey}" \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @scenario-${scenario.id}.ndjson`:'';
+  const curl=elasticConfig?`curl -X POST "${elasticConfig.url.replace(/\/$/,'')}/_bulk" \\\n  ${curlAuthFlag(elasticConfig)} \\\n  -H "Content-Type: application/x-ndjson" \\\n  --data-binary @scenario-${scenario.id}.ndjson`:'';
   const crits=events.filter(e=>e.severity==='critical').length;
   return(
     <div className="rounded-xl border border-gray-700 bg-gray-900 overflow-hidden">
@@ -2950,7 +3434,7 @@ export default function App(){
       _includeAdminUsers=false;
       setLogs(nl);setGenerating(false);
     },300);
-  },[selected,vendorMinLogs,maxLogs,logsPerDay,vendorRandomness,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes,cloudtrailLogTypes,oktaLogTypes,crowdstrikeLogTypes,wdnsLogTypes,endpointAlertPct]);
+  },[selected,vendorMinLogs,maxLogs,logsPerDay,vendorRandomness,vendorHostnamePrefix,vendorHostnameCap,vendorIncludeAdmin,timeRange,emailDomain,windowsLogTypes,linuxLogTypes,oracleLogTypes,mssqlLogTypes,cloudtrailLogTypes,oktaLogTypes,crowdstrikeLogTypes,wdnsLogTypes,endpointAlertPct]);
 
   const handlePush=useCallback(async()=>{
     setPushing(true);
@@ -3232,6 +3716,14 @@ export default function App(){
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+            <div>
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">ML Anomaly Detection</h2>
+              <div className="space-y-3">
+                <MLSetupCard elasticConfig={elasticConfig}/>
+                <MLScenarioCard title="Impossible Travel" icon="✈️" generator={generateImpossibleTravelEvents} elasticConfig={elasticConfig}/>
+                <MLScenarioCard title="Unusual Login Time" icon="🌙" generator={generateUnusualLoginTimeEvents} elasticConfig={elasticConfig}/>
               </div>
             </div>
             {activeScenario&&aptScenarioData&&(

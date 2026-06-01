@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/robertoarico/elastic-demo-forge log --oneline -20)",
+      "Bash(git -C /Users/robertoarico/elastic-demo-forge status)",
+      "Bash(git -C /Users/robertoarico/elastic-demo-forge log --oneline -5)",
+      "Bash(git -C /Users/robertoarico/elastic-demo-forge diff src/App.jsx vite.config.js .claude/settings.json)",
+      "Bash(git -C /Users/robertoarico/elastic-demo-forge add src/App.jsx vite.config.js .claude/settings.json)"
+    ]
+  }
+}
