@@ -1,8 +1,8 @@
 # Changelog
 
-Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-managed only (branch `release/1.x`). **v2.x** adds Elastic Cloud Serverless and AlertZero (branch `main`).
+Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-managed only (branch `release/1.x`). **v2.x** adds Elastic Cloud Serverless and AlertZero (branch `main`). v2 is a superset of v1: everything in 1.0.0 still works on Cloud Hosted / self-managed.
 
-## [2.0.0-dev.0] — unreleased (`main`)
+## [2.0.0] — 2026-11-23 (`main`)
 
 ### Added
 - **Serverless support.** A *Deployment Type* selector in the connection dialog (Cloud Hosted / Self-managed, or Serverless Security).
@@ -24,8 +24,9 @@ Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-man
 
 ### Known limitations
 - AlertZero is a Preview feature; managed Worker workflow IDs may change.
-- Real-host mode, Rule Coverage and the Hunt IOC path have not been exercised end to end through the forge.
+- Real-host mode and Rule Coverage have not been exercised end to end through the forge.
+- Hunt: a manual run with no new candidate reports does nothing. Running Hunt on a chosen report (`reportIds`) was verified against the Workflows API (it re-hunted an already-clean report and recorded a hit), but the forge has no report picker yet; the Hunt IOC box only seeds the event.
 
-## [1.0.0] — ECH only (`v1.0.0`, `release/1.x`)
+## [1.0.0] — 2026-11-23 — ECH only (`v1.0.0`, `release/1.x`)
 
 Log generators for 13 vendors, APT / raw attack scenarios with background noise, ML anomaly detection demo jobs, the Elasticsearch and Kibana dev-server proxies, self-managed cluster support, alert email notifications, custom noise and logs-per-day controls.

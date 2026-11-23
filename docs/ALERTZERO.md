@@ -113,7 +113,7 @@ Continuous Threat Hunt matches your data against **threat reports it builds itse
 3. In the forge, enter it under **Hunt IOC** and click **Seed IOC event** (writes `logs-demo.hunt-default`).
 4. Run **Continuous Threat Hunt** again. It should record a finding and a detection gap, which Rule Coverage can then turn into a proposal.
 
-**Observed:** when reports already exist and the feed ingest only finds items it has seen before, a manual run selects 0 candidate reports and does nothing. The Worker's manual trigger accepts up to 10 `reportIds`, which would force specific reports; the forge does not expose that yet. **Not verified end to end.**
+**Observed:** when reports already exist and the feed ingest only finds items it has seen before, a manual run selects 0 candidate reports and does nothing. The Worker's manual trigger accepts up to 10 `reportIds`, which forces a "bypass sweep" of specific reports. **Verified:** seeding an event for an IP from a report's `discriminating` IOCs and running Hunt with that report's ID re-hunted a report already marked `clean` and recorded a hit (a critical Cloud Accounts T1078.004 finding), a proposal behind an approval gate, and 3 coverage items for the Detection Watch. The forge has no report picker yet, so the `reportIds` run was started through the Workflows API directly. Threat reports live in `.kibana-threat-reports` (readable with the demo key); prefer IOCs with `tier: discriminating` — `reference` IOCs are mostly benign links.
 
 ### 4.6 Reset
 
@@ -176,7 +176,7 @@ Note: the cluster adds `event.agent_id_status: auth_metadata_missing` to simulat
 
 - AlertZero is Preview; Worker workflow IDs and behaviour may change.
 - **Real enrolled host mode** has not been exercised end to end (host picker, seeding to a real host, approval).
-- **Rule Coverage** and the Hunt IOC path have not been run through the forge end to end.
+- **Rule Coverage** has not been run through the forge end to end, and the Hunt report picker does not exist yet (Hunt on chosen reports was verified via the API).
 - Simulated endpoints cannot execute response actions by design.
 - Seeded alerts are written directly to the alerts index; they are not produced by rule executions, so they have no rule-execution history.
 - Event `tags` are mapped as analyzed text in the endpoint indices, so exact-match tag filters on events don't work (reset uses data stream deletion, not tags, for events).
