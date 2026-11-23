@@ -11,7 +11,7 @@ A browser-based data generator for **Elastic Security** demos. Produce realistic
 
 | Version | Where | Targets |
 |---|---|---|
-| **v2** (`v2.0.0`) | `main` | Elastic Cloud Hosted, self-managed **and Elastic Cloud Serverless** (Security projects), plus the **AlertZero** tab |
+| **v2** (`v2.1.0`) | `main` | Elastic Cloud Hosted, self-managed **and Elastic Cloud Serverless** (Security projects), plus the **AlertZero** tab |
 | **v1** (`v1.0.0`) | tag `v1.0.0`, branch `release/1.x` | Elastic Cloud Hosted and self-managed only |
 
 Fixes that apply to both land on `release/1.x` first and are merged into `main`. See [CHANGELOG.md](CHANGELOG.md).
