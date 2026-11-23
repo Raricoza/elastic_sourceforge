@@ -68,6 +68,27 @@ In the **Settings** panel (top right):
 1. Paste your **Elasticsearch URL** (e.g. `https://my-cluster.es.us-east-1.aws.found.io`)
 2. Paste an **API key** with write access to the target indices
 
+#### Serverless (v2)
+
+Version 2 also supports **Elastic Cloud Serverless** (Security projects). In the connection dialog choose **Serverless (Security)**, then:
+
+1. Paste the project's **Elasticsearch endpoint** (`https://<project>.es.<region>.<provider>.elastic.cloud`) and **Kibana URL** (`https://<project>.kb...`).
+2. Paste an **API key** created in Kibana → Stack Management → API keys. Serverless has no username/password access, so Basic Auth is disabled.
+
+Known serverless differences: the connection test uses `GET /` (no `/_cluster/health`), Kibana calls send `elastic-api-version`, and direct writes to `.alerts-security.alerts-default` (APT scenario alerts) may be restricted. ML anomaly detection requires a Security or Observability project.
+
+Version 1 (`v1.0.0`, branch `release/1.x`) supports Elastic Cloud Hosted / self-managed only.
+
+#### AlertZero demo (v2, serverless Security only)
+
+The **AlertZero** tab seeds data for all four Watches and runs the Workers on demand:
+
+1. **Seed:** 5 tagged custom rules (one deliberately noisy), a Defend-shaped attack chain plus benign noise, and closed false-positive alerts for Rule Tuning.
+2. **Run Workers:** Alert Triage, Attack Discovery, Continuous Threat Hunt, Rule Tuning and Rule Coverage, in sequence or one by one, via the Workflows API (`/api/workflows/workflow/{id}/run`). Runs are billed (workflow executions, Agent Builder, model tokens).
+3. **Approve in Kibana:** proposed actions stay a human step (Security → AlertZero). Approving the Attack Discovery handoff starts Endpoint Analysis.
+4. **Hunt IOC:** after Continuous Threat Hunt builds its first threat reports, seed a matching event, then run it again.
+5. **Reset:** removes only objects tagged `alertzero-demo`.
+
 #### Creating an API key
 
 In Kibana, go to **Stack Management → API Keys → Create API key**, or run:

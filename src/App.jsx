@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import AlertZeroPage from "./AlertZeroPage.jsx";
+import { loadConfig, saveConfig as persistConfig, isServerless, curlAuthFlag, fetchES, fetchKibana } from "./elastic.js";
 
 // ─── logUtils ────────────────────────────────────────────────────────────────
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -1626,33 +1628,6 @@ function generateScenarioCoreLogs(ctx, timeRange){
   return logs;
 }
 
-// ─── Elastic Config ───────────────────────────────────────────────────────────
-const STORAGE_KEY='elastic_config_forge';
-function loadConfig(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');}catch{return null;}}
-function saveConfig(c){localStorage.setItem(STORAGE_KEY,JSON.stringify(c));}
-function buildHeaders(cfg){
-  const auth=cfg.authMode==='basic'
-    ?`Basic ${btoa(`${cfg.username||''}:${cfg.password||''}`)}`
-    :`ApiKey ${cfg.apiKey||''}`;
-  return{'Content-Type':'application/x-ndjson','Authorization':auth};
-}
-function curlAuthFlag(cfg){
-  return cfg.authMode==='basic'
-    ?`-u "${cfg.username}:${cfg.password}"`
-    :`-H "Authorization: ApiKey ${cfg.apiKey}"`;
-}
-// Route all ES requests through the Vite dev-server proxy (/es-proxy) so the
-// browser never makes a cross-origin request — eliminates CORS failures and
-// allows self-signed certificates on local clusters.
-function fetchES(cfg,path,opts={}){
-  const headers={...buildHeaders(cfg),'X-ES-URL':cfg.url.replace(/\/$/,'')};
-  return fetch(`/es-proxy${path}`,{...opts,headers:{...headers,...(opts.headers||{})}});
-}
-function fetchKibana(cfg,path,opts={}){
-  const base=(cfg.kibanaUrl||'').replace(/\/$/,'');
-  const headers={...buildHeaders(cfg),'Content-Type':'application/json','kbn-xsrf':'true','X-Kibana-URL':base};
-  return fetch(`/kibana-proxy${path}`,{...opts,headers:{...headers,...(opts.headers||{})}});
-}
 // Creates lightweight disabled detection rules in Kibana so that alert rule links work.
 // Uses stable rule_id slugs so repeated pushes don't create duplicates.
 // Returns Map<ruleName, kibanaId> or null if no Kibana URL configured.
@@ -2548,15 +2523,19 @@ function MLScenarioCard({title,icon,generator,elasticConfig}){
 
 // Config Dialog
 function ConfigDialog({open,onClose,onSave}){
-  const [cfg,setCfg]=useState({url:'',authMode:'apiKey',apiKey:'',username:'',password:'',kibanaUrl:'',alertEmail:'',alertConnectorId:''});
+  const [cfg,setCfg]=useState({url:'',deployment:'hosted',authMode:'apiKey',apiKey:'',username:'',password:'',kibanaUrl:'',alertEmail:'',alertConnectorId:''});
   const [status,setStatus]=useState(null);
   const [err,setErr]=useState('');
   const [showCurl,setShowCurl]=useState(false);
-  useEffect(()=>{if(open){const s=loadConfig();if(s)setCfg({url:s.url||'',authMode:s.authMode||(s.apiKey?'apiKey':'apiKey'),apiKey:s.apiKey||'',username:s.username||'',password:s.password||'',kibanaUrl:s.kibanaUrl||'',alertEmail:s.alertEmail||'',alertConnectorId:s.alertConnectorId||''});}},[open]);
+  useEffect(()=>{if(open){const s=loadConfig();if(s)setCfg({url:s.url||'',deployment:s.deployment||'hosted',authMode:s.authMode||(s.apiKey?'apiKey':'apiKey'),apiKey:s.apiKey||'',username:s.username||'',password:s.password||'',kibanaUrl:s.kibanaUrl||'',alertEmail:s.alertEmail||'',alertConnectorId:s.alertConnectorId||''});}},[open]);
   const upd=(k,v)=>setCfg(c=>({...c,[k]:v}));
-  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetchES(cfg,'/_cluster/health',{headers:{'Content-Type':'application/json'}});if(r.ok){const d=await r.json();setStatus('ok');setErr(`Cluster: ${d.cluster_name} — ${d.status}`);}else{let detail=`HTTP ${r.status}`;try{const body=await r.json();if(body?.error)detail=body.error;}catch{}setStatus('error');setErr(detail);}}catch(e){setStatus('error');setErr(e.message);}};
-  const save=()=>{saveConfig(cfg);onSave(cfg);onClose();};
-  const curl=`curl -k ${curlAuthFlag(cfg)} "${cfg.url.replace(/\/$/,'')}/_cluster/health?pretty"`;
+  const sl=isServerless(cfg);
+  const setDeployment=v=>setCfg(c=>({...c,deployment:v,...(v==='serverless'?{authMode:'apiKey'}:{})}));
+  // Serverless has no /_cluster/health; GET / returns project info instead.
+  const testPath=sl?'/':'/_cluster/health';
+  const test=async()=>{setStatus('testing');setErr('');try{const r=await fetchES(cfg,testPath,{headers:{'Content-Type':'application/json'}});if(r.ok){const d=await r.json();setStatus('ok');setErr(sl?`Serverless project — ${d.version?.build_flavor==='serverless'?'confirmed':'build flavor: '+(d.version?.build_flavor||'unknown')}`:`Cluster: ${d.cluster_name} — ${d.status}`);}else{let detail=`HTTP ${r.status}`;try{const body=await r.json();if(body?.error)detail=body.error;}catch{}setStatus('error');setErr(detail);}}catch(e){setStatus('error');setErr(e.message);}};
+  const save=()=>{persistConfig(cfg);onSave(cfg);onClose();};
+  const curl=`curl -k ${curlAuthFlag(cfg)} "${cfg.url.replace(/\/$/,'')}${sl?'/':'/_cluster/health?pretty'}"`;
   if(!open)return null;
   return(
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -2568,17 +2547,25 @@ function ConfigDialog({open,onClose,onSave}){
         </div>
         <div className="p-5 space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs text-gray-400 font-medium">Cluster URL</label>
-            <input type="text" value={cfg.url} onChange={e=>upd('url',e.target.value)} placeholder="http://10.0.0.5:9200 or https://my-cluster:9200" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            <label className="text-xs text-gray-400 font-medium">Deployment Type</label>
+            <div className="flex gap-2">
+              {[['hosted','Cloud Hosted / Self-managed'],['serverless','Serverless (Security)']].map(([val,label])=>(
+                <button key={val} onClick={()=>setDeployment(val)} className={`flex-1 h-8 text-xs font-medium rounded-lg border transition-all ${(cfg.deployment||'hosted')===val?'bg-blue-600 border-blue-500 text-white':'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white'}`}>{label}</button>
+              ))}
+            </div>
           </div>
           <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 font-medium">{sl?'Elasticsearch Endpoint':'Cluster URL'}</label>
+            <input type="text" value={cfg.url} onChange={e=>upd('url',e.target.value)} placeholder={sl?'https://my-project-abc123.es.us-east-1.aws.elastic.cloud':'http://10.0.0.5:9200 or https://my-cluster:9200'} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+          </div>
+          {!sl&&<div className="space-y-1.5">
             <label className="text-xs text-gray-400 font-medium">Auth Method</label>
             <div className="flex gap-2">
               {[['apiKey','API Key'],['basic','Basic Auth']].map(([val,label])=>(
                 <button key={val} onClick={()=>upd('authMode',val)} className={`flex-1 h-8 text-xs font-medium rounded-lg border transition-all ${cfg.authMode===val?'bg-blue-600 border-blue-500 text-white':'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white'}`}>{label}</button>
               ))}
             </div>
-          </div>
+          </div>}
           {cfg.authMode==='apiKey'?(
             <div className="space-y-1.5">
               <label className="text-xs text-gray-400 font-medium">API Key</label>
@@ -2598,7 +2585,7 @@ function ConfigDialog({open,onClose,onSave}){
           )}
           <div className="space-y-1.5">
             <label className="text-xs text-gray-400 font-medium">Kibana URL (optional)</label>
-            <input type="text" value={cfg.kibanaUrl} onChange={e=>upd('kibanaUrl',e.target.value)} placeholder="https://my-cluster.kb.io:5601" className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
+            <input type="text" value={cfg.kibanaUrl} onChange={e=>upd('kibanaUrl',e.target.value)} placeholder={sl?'https://my-project-abc123.kb.us-east-1.aws.elastic.cloud':'https://my-cluster.kb.io:5601'} className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"/>
           </div>
           <div className="border-t border-gray-700 pt-4 space-y-3">
             <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Alert Notifications (optional)</p>
@@ -2621,7 +2608,8 @@ function ConfigDialog({open,onClose,onSave}){
             </div>
           )}
           {status==='error'&&err!=='CORS_ERROR'&&<div className="flex gap-2 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">✗ {err||'Connection failed'}</div>}
-          {status===null&&<div className="flex gap-2 p-2.5 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">ℹ Requests are proxied via Vite dev server — works with HTTP, HTTPS, and self-signed certs.</div>}
+          {sl&&status===null&&<div className="flex gap-2 p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-xs text-blue-300">ℹ Serverless uses API keys only. Create one in Kibana → Stack Management → API keys. Requires a Security project.</div>}
+          {!sl&&status===null&&<div className="flex gap-2 p-2.5 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">ℹ Requests are proxied via Vite dev server — works with HTTP, HTTPS, and self-signed certs.</div>}
           <div className="flex gap-2 pt-1">
             <Button variant="outline" onClick={test} disabled={!cfg.url||(cfg.authMode==='apiKey'?!cfg.apiKey:!cfg.username||!cfg.password)||status==='testing'} className="flex-1">{status==='testing'?'Testing…':'Test Connection'}</Button>
             <Button onClick={save} disabled={!cfg.url} className="flex-1">Save Config</Button>
@@ -3527,7 +3515,7 @@ export default function App(){
             <span className="font-bold text-sm">Elastic <span className="text-blue-400">Demo Forge</span></span>
           </div>
           <nav className="flex gap-1">
-            {[{id:'home',label:'Log Generator',icon:'🛡'},{id:'scenarios',label:'Attack Scenarios',icon:'🚨'}].map(({id,label,icon})=>(
+            {[{id:'home',label:'Log Generator',icon:'🛡'},{id:'scenarios',label:'Attack Scenarios',icon:'🚨'},{id:'alertzero',label:'AlertZero',icon:'🤖'}].map(({id,label,icon})=>(
               <button key={id} onClick={()=>setPage(id)} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",page===id?"text-blue-400 bg-blue-500/10":"text-gray-400 hover:text-white")}>
                 <span>{icon}</span>{label}
               </button>
@@ -3675,6 +3663,7 @@ export default function App(){
         </div>
       )}
 
+      {page==='alertzero'&&<AlertZeroPage elasticConfig={elasticConfig}/>}
       {page==='scenarios'&&(
         <div className="min-h-screen">
           <div className="border-b border-gray-800 bg-gradient-to-b from-red-500/5 to-transparent">
