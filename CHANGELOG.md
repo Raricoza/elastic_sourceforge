@@ -2,6 +2,12 @@
 
 Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-managed only (branch `release/1.x`). **v2.x** adds Elastic Cloud Serverless and AlertZero (branch `main`). v2 is a superset of v1: everything in 1.0.0 still works on Cloud Hosted / self-managed.
 
+## [Unreleased]
+
+### Added
+- **Hunt report picker** (AlertZero tab): load the threat reports from `.kibana-threat-reports`, filter to reports with discriminating / uncertain IOCs, pick a report and an IOC, seed a matching event (IP, domain, URL or file hash) and run Continuous Threat Hunt on that report through a `reportIds` bypass sweep. Reports are shown with severity, source and hunt status, which refreshes after the run.
+- `seedHuntIoc` accepts URLs and generic file hashes (MD5 / SHA-1 / SHA-256).
+
 ## [2.0.0] — 2026-11-23 (`main`)
 
 ### Added

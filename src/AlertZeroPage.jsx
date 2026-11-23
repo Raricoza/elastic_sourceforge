@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { isServerless } from './elastic.js';
-import { WORKERS, SEQUENCE, createRules, listEndpoints, seedEvents, seedFalsePositives, seedHuntIoc, resetDemo, workerStatus, runWorker, waitForRun } from './alertzero.js';
+import { WORKERS, SEQUENCE, createRules, listEndpoints, seedEvents, seedFalsePositives, seedHuntIoc, listThreatReports, iocSeedArg, resetDemo, workerStatus, runWorker, waitForRun } from './alertzero.js';
 
 const inputCls = 'w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500';
 function Btn({ children, onClick, disabled, tone = 'blue' }) {
@@ -15,6 +15,9 @@ function Card({ step, title, children }) {
     </div>
   );
 }
+const SEV_TONE = { critical: 'text-red-400', high: 'text-orange-400', medium: 'text-yellow-400', low: 'text-blue-400' };
+const HUNT_TONE = { hit: 'text-red-400', clean: 'text-green-400', incomplete: 'text-amber-400' };
+const TIER_TONE = { discriminating: 'text-red-300', uncertain: 'text-amber-300', reference: 'text-gray-500', denied: 'text-gray-600' };
 const STATUS_TONE = { completed: 'text-green-400', failed: 'text-red-400', running: 'text-blue-400', pending: 'text-gray-400' };
 
 export default function AlertZeroPage({ elasticConfig: cfg }) {
@@ -25,6 +28,10 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
   const [fpCount, setFpCount] = useState(90);
   const [noiseHosts, setNoiseHosts] = useState(30);
   const [ioc, setIoc] = useState({ domain: '', ip: '', sha256: '' });
+  const [reports, setReports] = useState(null);
+  const [reportPick, setReportPick] = useState('');
+  const [iocPick, setIocPick] = useState(0);
+  const [onlyUseful, setOnlyUseful] = useState(true);
   const [epMode, setEpMode] = useState('simulated'); // 'simulated' | 'real'
   const [endpoints, setEndpoints] = useState(null);
   const [epPick, setEpPick] = useState('');
@@ -55,6 +62,33 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
   const events = wrap('events', async () => { await seedEvents(cfg, { noiseHosts, endpoint: endpointOpt(), victim }, log); });
   const fps = wrap('false positives', async () => { await seedFalsePositives(cfg, { count: fpCount }, log); });
   const hunt = wrap('hunt IOC', async () => { await seedHuntIoc(cfg, ioc, log); });
+  const HUNT = WORKERS.find(w => w.key === 'hunt');
+  const useful = r => r.iocs.filter(i => ['discriminating', 'uncertain'].includes(i.tier) && iocSeedArg(i));
+  const shownReports = (reports || []).filter(r => !onlyUseful || useful(r).length);
+  const picked = reports?.find(r => r.id === reportPick);
+  const pickedIoc = picked?.iocs[iocPick];
+  const loadReports = wrap('load reports', async () => {
+    const list = await listThreatReports(cfg);
+    setReports(list);
+    const first = list.find(r => useful(r).length);
+    setReportPick(first?.id || ''); setIocPick(0);
+    log(`${list.length} threat report(s); ${list.filter(r => useful(r).length).length} with seedable discriminating/uncertain IOCs`);
+  });
+  const seedPicked = async () => {
+    const arg = iocSeedArg(pickedIoc);
+    if (!arg) throw new Error('That IOC type cannot be seeded (email / wallet).');
+    await seedHuntIoc(cfg, arg, log);
+  };
+  const runPicked = async () => {
+    if (!window.confirm(`Run Continuous Threat Hunt on "${picked.title}"? It re-hunts the report even if it was hunted before. Runs count toward workflow, Agent Builder and model-token billing.`)) return false;
+    await runOne(HUNT, { reportIds: [picked.id] });
+    log('Hunt: a hit or a detection gap appears under Proposed actions; Rule Coverage can turn gaps into proposals.');
+    setReports(await listThreatReports(cfg));
+    return true;
+  };
+  const seedIocOnly = wrap('seed report IOC', seedPicked);
+  const huntOnly = wrap('hunt report', async () => { await runPicked(); });
+  const seedAndHunt = wrap('seed + hunt', async () => { await seedPicked(); await new Promise(r => setTimeout(r, 4000)); await runPicked(); });
   const seedAll = wrap('seed all', async () => {
     const map = await createRules(cfg, log);
     await seedEvents(cfg, { noiseHosts, endpoint: endpointOpt(), victim }, log);
@@ -66,10 +100,10 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
     await resetDemo(cfg, { dryRun: false }, log);
   });
 
-  const runOne = async w => {
+  const runOne = async (w, inputs) => {
     const t0 = Date.now();
     log(`${w.name}: starting`);
-    const id = await runWorker(cfg, w);
+    const id = await runWorker(cfg, w, inputs);
     log(`${w.name}: started${id ? ` (execution ${id})` : ''}`);
     let last = '';
     const ex = await waitForRun(cfg, w, id, { startedAfter: t0 - 5000 }, s => { if (s !== last) { last = s; log(`${w.name}: ${s}`); } });
@@ -165,12 +199,57 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
         </div>
       </Card>
 
-      <Card step="3" title="Hunt IOC (after the first Continuous Threat Hunt run)">
-        <p className="text-[11px] text-gray-500">Hunt builds its own threat reports. Open one, pick an IOC no rule covers, seed a matching event here, then run Continuous Threat Hunt again.</p>
-        <div className="grid grid-cols-3 gap-2">
-          {['domain', 'ip', 'sha256'].map(k => <input key={k} className={inputCls} placeholder={k} value={ioc[k]} onChange={e => setIoc({ ...ioc, [k]: e.target.value.trim() })} />)}
+      <Card step="3" title="Hunt on a threat report">
+        <p className="text-[11px] text-gray-500">Continuous Threat Hunt hunts reports it builds itself from public feeds. A manual run that names a report forces it to be hunted again, even if it was hunted before. Pick a report and an IOC, seed a matching event, then run Hunt on that report.</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Btn onClick={loadReports} disabled={!!busy}>{busy === 'load reports' ? 'Loading…' : reports ? 'Reload reports' : 'Load threat reports'}</Btn>
+          <label className="flex items-center gap-2 text-[11px] text-gray-400"><input type="checkbox" checked={onlyUseful} onChange={e => setOnlyUseful(e.target.checked)} />Only reports with discriminating / uncertain IOCs</label>
         </div>
-        <Btn onClick={hunt} disabled={!!busy || !(ioc.domain || ioc.ip || ioc.sha256)}>Seed IOC event</Btn>
+        {reports && (
+          <div className="max-h-56 overflow-auto divide-y divide-gray-800 border border-gray-800 rounded-lg">
+            {!shownReports.length && <p className="px-3 py-2 text-xs text-gray-500">No matching reports.</p>}
+            {shownReports.map(r => (
+              <button key={r.id} onClick={() => { setReportPick(r.id); setIocPick(0); }} className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 ${reportPick === r.id ? 'bg-blue-500/10' : 'hover:bg-gray-800/50'}`}>
+                <span className="text-gray-500 w-12 shrink-0">{r.date.slice(5, 10)}</span>
+                <span className={`w-14 shrink-0 ${SEV_TONE[r.severity] || 'text-gray-400'}`}>{r.severity}</span>
+                <span className="flex-1 truncate text-gray-200" title={r.title}>{r.title}<span className="text-gray-500"> · {r.source}</span></span>
+                <span className={`w-20 shrink-0 text-right ${HUNT_TONE[r.huntStatus] || 'text-gray-500'}`}>{r.huntStatus}</span>
+                <span className="w-12 shrink-0 text-right text-gray-500">{useful(r).length} IOC</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {picked && (
+          <div className="space-y-2 border border-gray-800 rounded-lg p-3">
+            <p className="text-[11px] text-gray-400 break-all">{picked.id} · rank {picked.rank ?? '?'} · {picked.url}</p>
+            <div className="max-h-40 overflow-auto space-y-1">
+              {picked.iocs.map((i, n) => {
+                const ok = !!iocSeedArg(i);
+                return (
+                  <label key={n} className={`flex items-center gap-2 text-[11px] font-mono ${ok ? 'text-gray-300' : 'text-gray-600'}`}>
+                    <input type="radio" name="hunt-ioc" disabled={!ok} checked={iocPick === n} onChange={() => setIocPick(n)} />
+                    <span className={`w-24 shrink-0 ${TIER_TONE[i.tier] || ''}`}>{i.tier}</span><span className="w-12 shrink-0">{i.type}</span><span className="truncate">{i.value}</span>
+                  </label>
+                );
+              })}
+              {!picked.iocs.length && <p className="text-[11px] text-gray-500">This report has no IOCs; you can still run Hunt on it.</p>}
+            </div>
+            {pickedIoc?.tier === 'uncertain' && pickedIoc.type === 'ip' && <p className="text-[11px] text-amber-400">Uncertain IPs are often version numbers misread from advisories (e.g. firmware 8.2.0.1). Prefer discriminating IOCs.</p>}
+            {pickedIoc?.tier === 'reference' && <p className="text-[11px] text-amber-400">Reference IOCs are usually benign links (e.g. a vendor site); prefer discriminating or uncertain ones.</p>}
+            <div className="flex flex-wrap gap-2">
+              <Btn onClick={seedAndHunt} disabled={!!busy || !iocSeedArg(pickedIoc)}>{busy === 'seed + hunt' ? 'Running…' : 'Seed IOC + run Hunt'}</Btn>
+              <Btn onClick={seedIocOnly} disabled={!!busy || !iocSeedArg(pickedIoc)}>Seed IOC only</Btn>
+              <Btn onClick={huntOnly} disabled={!!busy}>Run Hunt on report</Btn>
+            </div>
+          </div>
+        )}
+        <details className="text-[11px] text-gray-500">
+          <summary className="cursor-pointer">Seed an IOC manually</summary>
+          <div className="grid grid-cols-3 gap-2 mt-2">
+            {['domain', 'ip', 'sha256'].map(k => <input key={k} className={inputCls} placeholder={k} value={ioc[k]} onChange={e => setIoc({ ...ioc, [k]: e.target.value.trim() })} />)}
+          </div>
+          <div className="mt-2"><Btn onClick={hunt} disabled={!!busy || !(ioc.domain || ioc.ip || ioc.sha256)}>Seed IOC event</Btn></div>
+        </details>
       </Card>
 
       <Card step="4" title="Reset">

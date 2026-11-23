@@ -106,14 +106,16 @@ In simulated mode the isolate cannot execute. If you do not want to leave propos
 
 ### 4.5 Hunt
 
-Continuous Threat Hunt matches your data against **threat reports it builds itself from public feeds** (the ingest runs every 4 hours). You cannot invent a report. The forge supports the follow-up step:
+Continuous Threat Hunt matches your data against **threat reports it builds itself from public feeds** (ingest every 4 hours, stored in `.kibana-threat-reports`). You can't invent a report, but you can choose which one to hunt. The **Hunt on a threat report** card does this:
 
-1. Let Hunt build its reports (scheduled, or run it once).
-2. In Kibana, open a Hunt threat report and pick an IOC (domain, IP or SHA256) that no rule covers.
-3. In the forge, enter it under **Hunt IOC** and click **Seed IOC event** (writes `logs-demo.hunt-default`).
-4. Run **Continuous Threat Hunt** again. It should record a finding and a detection gap, which Rule Coverage can then turn into a proposal.
+1. **Load threat reports.** The forge reads the usable reports (about 64 in the test project), newest first, with severity, source, hunt status (`none`, `incomplete`, `clean`, `hit`) and their IOCs. *Only reports with discriminating / uncertain IOCs* is on by default.
+2. **Pick a report and an IOC.** IOCs are sorted by tier: `discriminating` (best), `uncertain`, `reference` (mostly benign links such as a vendor site) and `denied`. Email and wallet IOCs can't be seeded. Uncertain IPs are often version numbers misread from advisories, so prefer discriminating ones.
+3. **Seed IOC + run Hunt**: writes one matching event to `logs-demo.hunt-default` (IP, domain, URL or file hash), waits a few seconds, then starts Continuous Threat Hunt with that report's ID (after the billing confirmation) and reloads the list so you can see the new hunt status. *Seed IOC only* and *Run Hunt on report* do each half alone. *Seed an IOC manually* is still available for IOCs you got elsewhere.
+4. In Kibana, look under **Proposed actions** for the Hunt result. Detection gaps it records become input for **Rule Coverage**, which proposes enabling or creating a rule.
 
-**Observed:** when reports already exist and the feed ingest only finds items it has seen before, a manual run selects 0 candidate reports and does nothing. The Worker's manual trigger accepts up to 10 `reportIds`, which forces a "bypass sweep" of specific reports. **Verified:** seeding an event for an IP from a report's `discriminating` IOCs and running Hunt with that report's ID re-hunted a report already marked `clean` and recorded a hit (a critical Cloud Accounts T1078.004 finding), a proposal behind an approval gate, and 3 coverage items for the Detection Watch. The forge has no report picker yet, so the `reportIds` run was started through the Workflows API directly. Threat reports live in `.kibana-threat-reports` (readable with the demo key); prefer IOCs with `tier: discriminating` — `reference` IOCs are mostly benign links.
+Why a named report: a manual run with **no** `reportIds` selects candidates the normal way and, when reports were already hunted and the feed finds nothing new, selects **0 reports** and does nothing. Naming a report is a "bypass sweep" that hunts it regardless.
+
+**Verified (live):** hunting a report already marked `clean` re-hunted it and recorded a **hit** (a critical Cloud Accounts T1078.004 finding for user `asmith`), one proposal behind an approval gate, and 3 coverage items for the Detection Watch. The picker's listing was verified against the live project (64 reports, 5 with seedable discriminating/uncertain IOCs); the picker UI was exercised end to end against a mock, not yet clicked through against the live project. Seeded events use the host `ws-eng-12` and user `asmith`.
 
 ### 4.6 Reset
 
@@ -161,7 +163,7 @@ These are managed, Preview workflows and the IDs may change between versions. Al
 | **Nothing new under Investigate** after Attack Discovery | The attack was attached to an existing open investigation for the same host. Use **New host** and reseed. |
 | **Rule Tuning requests 0 reviews** | The noisy rule's false-positive rate is under 50%, or the closed alerts lack `kibana.alert.rule.revision`. Seed more false positives (default 90) with the current forge. |
 | **Triage says `nothing_pending`** | The scheduled run already handled the alerts. Check Proposed actions. |
-| **Hunt selects 0 reports** | No new candidate threat reports. Seed an IOC from a report and rerun (4.5). |
+| **Hunt selects 0 reports** | No new candidate threat reports. Use the **Hunt on a threat report** card to name a report (4.5). |
 | **Worker shows "not found"** | The managed workflow ID is missing: AlertZero may be off for the space, or the Workers aren't enabled. |
 | **Run fails with HTTP 403** | The API key lacks workflow privileges (`workflowsManagement:execute`, read executions). |
 | **`ws-…` alerts don't appear** | Wait 2–3 minutes; the rules run every minute with a 3-hour lookback. |
@@ -176,7 +178,7 @@ Note: the cluster adds `event.agent_id_status: auth_metadata_missing` to simulat
 
 - AlertZero is Preview; Worker workflow IDs and behaviour may change.
 - **Real enrolled host mode** has not been exercised end to end (host picker, seeding to a real host, approval).
-- **Rule Coverage** has not been run through the forge end to end, and the Hunt report picker does not exist yet (Hunt on chosen reports was verified via the API).
+- **Rule Coverage** has not been run through the forge end to end. The Hunt report picker's UI was tested against a mock; its live listing and the underlying Hunt-on-report run were verified.
 - Simulated endpoints cannot execute response actions by design.
 - Seeded alerts are written directly to the alerts index; they are not produced by rule executions, so they have no rule-execution history.
 - Event `tags` are mapped as analyzed text in the endpoint indices, so exact-match tag filters on events don't work (reset uses data stream deletion, not tags, for events).

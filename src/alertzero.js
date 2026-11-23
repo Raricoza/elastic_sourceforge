@@ -179,13 +179,49 @@ export async function seedFalsePositives(cfg, { count = 90, ruleMap } = {}, log)
   return r;
 }
 
-// ─── Hunt IOC (after Continuous Threat Hunt has built its first threat reports) ──
-export async function seedHuntIoc(cfg, { domain, ip, sha256 }, log) {
-  if (!domain && !ip && !sha256) throw new Error('Give at least one IOC');
+// ─── Hunt: threat reports + IOC seeding ──────────────────────────────────────
+// Continuous Threat Hunt matches data against threat reports it builds itself (stored in .kibana-threat-reports).
+// A manual run that names `reportIds` is a "bypass sweep": it hunts those reports even if they were hunted before.
+const TIER_RANK = { discriminating: 0, uncertain: 1, reference: 2, denied: 3 };
+export const sortIocs = iocs => [...iocs].sort((x, y) => (TIER_RANK[x.tier] ?? 9) - (TIER_RANK[y.tier] ?? 9));
+
+// Usable reports (extraction_method workflow_v4), newest first. `extracted` is not indexed, so IOCs are read from _source.
+export async function listThreatReports(cfg) {
+  const body = { size: 200, sort: [{ '@timestamp': 'desc' }], _source: ['source', 'severity', '@timestamp', 'rank_score', 'extracted.iocs', 'evidence', 'lineage.extraction_method'] };
+  const res = await fetchES(cfg, '/.kibana-threat-reports/_search', { method: 'POST', headers: JSON_H, body: JSON.stringify(body) });
+  const d = await jsonOf(res);
+  if (!res.ok) throw new Error(`threat reports: HTTP ${res.status} ${errText(d)}`);
+  return (d.hits?.hits || []).filter(h => h._source?.lineage?.extraction_method === 'workflow_v4').map(h => {
+    const s = h._source;
+    const ev = (s.evidence || []).find(e => e.space_id === 'default') || (s.evidence || [])[0] || {};
+    const url = s.source?.url || '';
+    return {
+      id: h._id, date: s['@timestamp'], severity: s.severity?.level || '?', rank: s.rank_score, source: s.source?.name || '?', url,
+      title: decodeURIComponent(url.split('/').filter(Boolean).pop() || h._id).replace(/[-_]/g, ' '),
+      huntStatus: ev.last_hunt_status || 'none', hits: ev.last_hunt_event_hit_count || 0, lastHunted: ev.last_hunted_at,
+      iocs: sortIocs((s.extracted?.iocs || []).filter(i => i.value).map(i => ({ type: i.type, value: i.value, tier: i.tier || 'uncertain' }))),
+    };
+  });
+}
+
+// IOC -> argument for seedHuntIoc, or null when the type cannot be seeded (email, wallet).
+export function iocSeedArg(ioc) {
+  if (!ioc) return null;
+  if (ioc.type === 'ip') return { ip: ioc.value };
+  if (ioc.type === 'domain') return { domain: ioc.value };
+  if (ioc.type === 'url') return { url: ioc.value };
+  if (ioc.type === 'hash' && [32, 40, 64].includes(ioc.value.length)) return { hash: ioc.value };
+  return null;
+}
+
+export async function seedHuntIoc(cfg, { domain, ip, sha256, hash, url }, log) {
+  hash = hash || sha256;
+  if (!domain && !ip && !hash && !url) throw new Error('Give at least one IOC');
   const doc = { '@timestamp': iso(0), tags: [AZ_TAG], host: { name: 'ws-eng-12', os: { type: 'windows' } }, user: { name: 'asmith' }, event: { category: ['network'], type: ['connection'], kind: 'event', dataset: 'demo.hunt' }, process: { name: 'svchost.exe' } };
+  if (url) { try { domain = domain || new URL(url).hostname; } catch { /* not a parsable url */ } doc.url = { full: url }; }
   if (domain) { doc.dns = { question: { name: domain } }; doc.destination = { domain }; }
   if (ip) doc.destination = { ...(doc.destination || {}), ip, port: 443 };
-  if (sha256) { doc.file = { hash: { sha256 }, name: 'payload.bin' }; doc.process.hash = { sha256 }; }
+  if (hash) { const algo = { 64: 'sha256', 40: 'sha1', 32: 'md5' }[hash.length] || 'sha256'; doc.file = { hash: { [algo]: hash }, name: 'payload.bin' }; doc.process.hash = { [algo]: hash }; }
   const r = await bulkCreate(cfg, 'logs-demo.hunt-default', [doc]);
   log?.(`hunt IOC event: ${r.ok} ok/${r.errors} err${r.firstError ? ' — ' + r.firstError : ''}`);
 }

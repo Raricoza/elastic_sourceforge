@@ -197,8 +197,9 @@ The **AlertZero** tab seeds data for all four Watches and runs the Workers on de
 1. **Seed** five tagged custom rules (one deliberately noisy), a Defend-shaped attack chain with benign noise, and closed false-positive alerts for Rule Tuning.
 2. **Pick the endpoint** the attack is attributed to: *Simulated* (generated agent, so Endpoint Analysis proposes isolate / kill / suspend without anything executing) or *Real enrolled host* (loaded from your project).
 3. **Run Workers** through the Workflows API, one by one or in sequence.
-4. **Approve in Kibana** (Security → AlertZero → Proposed actions) — approvals stay a human step.
-5. **Reset** removes only what carries the `alertzero-demo` tag.
+4. **Hunt on a threat report:** pick a report and one of its IOCs, seed a matching event and run Continuous Threat Hunt on that report.
+5. **Approve in Kibana** (Security → AlertZero → Proposed actions) — approvals stay a human step.
+6. **Reset** removes only what carries the `alertzero-demo` tag.
 
 Runs are billed (workflow executions, Agent Builder, model tokens). Full guide, expected results and troubleshooting: **[docs/ALERTZERO.md](docs/ALERTZERO.md)**.
 
