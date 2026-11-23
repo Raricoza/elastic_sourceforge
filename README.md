@@ -1,3 +1,4 @@
+<img width="1056" height="576" alt="Gemini_Generated_Image_nfhd2bnfhd2bnfhd (1)" src="https://github.com/user-attachments/assets/14b01232-ddf3-4d41-bd99-a4e497084b51" />
 # Elastic Demo Forge
 
 A browser-based log generator for **Elastic Security** demos. Produce realistic vendor log data and push it directly to Elasticsearch — no scripts, no pipelines, no infrastructure required.
