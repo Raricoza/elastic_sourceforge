@@ -1,0 +1,31 @@
+# Changelog
+
+Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-managed only (branch `release/1.x`). **v2.x** adds Elastic Cloud Serverless and AlertZero (branch `main`).
+
+## [2.0.0-dev.0] — unreleased (`main`)
+
+### Added
+- **Serverless support.** A *Deployment Type* selector in the connection dialog (Cloud Hosted / Self-managed, or Serverless Security).
+  - Serverless is API-key only; Basic Auth is hidden and ignored.
+  - The connection test uses `GET /` on Serverless (no `/_cluster/health`) and confirms the project is serverless.
+  - Kibana calls send `elastic-api-version: 2023-10-31` on Serverless.
+- **AlertZero tab** (Serverless Security projects), see [docs/ALERTZERO.md](docs/ALERTZERO.md):
+  - Seed five tagged detection rules (one deliberately noisy), a Defend-shaped attack chain with benign noise, and closed false-positive alerts for Rule Tuning.
+  - Run the Workers on demand through the Workflows API (list, start, follow), one by one or as a sequence, with billing confirmation.
+  - **Endpoint modes:** *Simulated* (per-host generated `agent.id`/`host.id`, so Endpoint Analysis proposes isolate / kill / suspend without executing) or *Real enrolled host* (picked from `/api/endpoint/metadata`).
+  - Configurable victim host, so each run gets a fresh investigation.
+  - Hunt IOC seeding and a tag-based reset (dry run first).
+- `src/elastic.js`: connection config, auth headers and ES/Kibana fetch helpers extracted from `App.jsx`.
+- README rewritten for v2; this changelog; `docs/ALERTZERO.md`.
+
+### Changed
+- README corrected: 13 vendors (was 7), ML anomaly detection and email notifications documented, Ransomware listed as an APT-style scenario, API keys documented as stored in `localStorage` (not React state), dev-server proxy requirement stated.
+- API key example now includes `metrics-*`.
+
+### Known limitations
+- AlertZero is a Preview feature; managed Worker workflow IDs may change.
+- Real-host mode, Rule Coverage and the Hunt IOC path have not been exercised end to end through the forge.
+
+## [1.0.0] — ECH only (`v1.0.0`, `release/1.x`)
+
+Log generators for 13 vendors, APT / raw attack scenarios with background noise, ML anomaly detection demo jobs, the Elasticsearch and Kibana dev-server proxies, self-managed cluster support, alert email notifications, custom noise and logs-per-day controls.

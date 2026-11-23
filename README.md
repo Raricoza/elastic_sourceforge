@@ -1,26 +1,33 @@
 <img width="1056" height="576" alt="Gemini_Generated_Image_nfhd2bnfhd2bnfhd (1)" src="https://github.com/user-attachments/assets/14b01232-ddf3-4d41-bd99-a4e497084b51" />
 # Elastic Demo Forge
 
-A browser-based log generator for **Elastic Security** demos. Produce realistic vendor log data and push it directly to Elasticsearch — no scripts, no pipelines, no infrastructure required.
+A browser-based data generator for **Elastic Security** demos. Produce realistic vendor log data, attack scenarios, ML anomalies and AlertZero demo data, and push it straight to Elasticsearch and Kibana — no Logstash, no Beats, no agents.
 
-![Elastic Demo Forge](https://img.shields.io/badge/Elastic-8.x%20%7C%209.x-005571?logo=elastic&logoColor=white) ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black) ![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind-3-06B6D4?logo=tailwindcss&logoColor=white)
+![Elastic Demo Forge](https://img.shields.io/badge/Elastic-8.x%20%7C%209.x%20%7C%20Serverless-005571?logo=elastic&logoColor=white) ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black) ![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind-3-06B6D4?logo=tailwindcss&logoColor=white)
+
+---
+
+## Versions
+
+| Version | Where | Targets |
+|---|---|---|
+| **v2** (in development, `2.0.0-dev.0`) | `main` | Elastic Cloud Hosted, self-managed **and Elastic Cloud Serverless** (Security projects), plus the **AlertZero** tab |
+| **v1** (`v1.0.0`) | tag `v1.0.0`, branch `release/1.x` | Elastic Cloud Hosted and self-managed only |
+
+Fixes that apply to both land on `release/1.x` first and are merged into `main`. See [CHANGELOG.md](CHANGELOG.md).
+
+To run v1: `git checkout v1.0.0` (or `release/1.x` for later ECH-only fixes).
 
 ---
 
 ## What it does
 
-Elastic Demo Forge gives you a point-and-click UI to:
-
-- **Generate log data** from seven vendor sources — Fortinet FortiGate, Palo Alto PAN-OS, Cisco Switch, Microsoft Exchange/Email, Elastic Endpoint, Windows Event Logs, and Linux/Syslog
-- **Push directly to Elasticsearch** via the `_bulk` API using an API key — no Logstash, no Beats, no agents
-- **Simulate APT attack scenarios** that produce correlated Kibana security alerts ready for [Elastic Attack Discovery](https://www.elastic.co/guide/en/security/current/attack-discovery.html)
-- **Generate background noise** alongside attack scenarios to make the detection story realistic
-
----
-
-## Screenshots
-
-> _Connect your Elastic cluster, choose a vendor and log volume, click Generate + Push._
+- **Generate log data** from 13 vendor sources (see [Supported vendors](#supported-vendors-and-their-default-indices))
+- **Push directly to Elasticsearch** via the `_bulk` API using an API key (or basic auth on hosted/self-managed)
+- **Simulate attack scenarios** that produce correlated Kibana security alerts ready for [Attack Discovery](https://www.elastic.co/docs/solutions/security/ai/attack-discovery)
+- **Generate background noise** alongside scenarios so the detection story is realistic
+- **Set up ML anomaly detection** demo jobs and matching scenarios (impossible travel, unusual login time)
+- **Run the AlertZero demo (v2, Serverless Security)**: seed data for all four Watches, run the Workers on demand, and show proposed response actions. See the [AlertZero walkthrough](docs/ALERTZERO.md)
 
 ---
 
@@ -30,68 +37,53 @@ Elastic Demo Forge gives you a point-and-click UI to:
 |---|---|
 | **Node.js** | v18 or higher |
 | **npm** | v9 or higher (bundled with Node.js) |
-| **Elasticsearch** | 8.x or 9.x (Elastic Cloud, ECK, or self-managed) |
-| **Kibana** | Required for Attack Discovery and Security dashboards |
-| **Elastic Security** | Enabled on your cluster (free or paid tier) |
+| **Elastic deployment** | One of: Elastic Cloud Hosted (8.x / 9.x), self-managed, or **Elastic Cloud Serverless — Security project** (v2 only) |
+| **Kibana URL** | Needed for detection rules, ML rules, alert links and everything in the AlertZero tab |
+| **Elastic Security** | Enabled (free or paid tier) |
 
-> **Tip:** The easiest way to get started is a free [Elastic Cloud trial](https://cloud.elastic.co/). A 14-day trial gives you a fully managed cluster with Kibana and Elastic Security pre-configured.
+> **Tip:** A free [Elastic Cloud trial](https://cloud.elastic.co/) gives you a managed cluster with Kibana and Elastic Security pre-configured.
 
 ---
 
 ## Quickstart
 
-### 1. Clone the repo
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/<your-org>/elastic-demo-forge.git
+git clone https://github.com/Raricoza/elastic_sourceforge.git elastic-demo-forge
 cd elastic-demo-forge
-```
-
-### 2. Install dependencies
-
-```bash
 npm install
 ```
 
-### 3. Start the dev server
+### 2. Start the dev server
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+Open [http://localhost:5173](http://localhost:5173). If that port is taken, Vite prints the port it picked instead.
 
-### 4. Connect to Elasticsearch
+> **Run it with the dev server.** All Elasticsearch and Kibana requests go through the dev server's `/es-proxy` and `/kibana-proxy` routes (this avoids CORS and allows self-signed certificates). `npm run build` / `npm run preview` do **not** include these routes, so a static build cannot reach your cluster on its own.
 
-In the **Settings** panel (top right):
+### 3. Connect
 
-1. Paste your **Elasticsearch URL** (e.g. `https://my-cluster.es.us-east-1.aws.found.io`)
-2. Paste an **API key** with write access to the target indices
+Click **Connect ES** (top right) and choose a **Deployment Type**:
 
-#### Serverless (v2)
+| | Cloud Hosted / Self-managed | Serverless (Security) — v2 |
+|---|---|---|
+| **Elasticsearch URL** | `https://<deployment>.es.<region>.<provider>.found.io` or `http://host:9200` | `https://<project>.es.<region>.<provider>.elastic.cloud` |
+| **Kibana URL** | `https://<deployment>.kb...` (optional but recommended) | `https://<project>.kb...` (required for AlertZero) |
+| **Auth** | API key or basic auth | **API key only** (serverless has no username/password access) |
+| **Connection test** | `GET /_cluster/health` | `GET /` (serverless has no `/_cluster/health`; the dialog confirms the project is serverless) |
+| **Kibana API calls** | standard | send `elastic-api-version: 2023-10-31` |
 
-Version 2 also supports **Elastic Cloud Serverless** (Security projects). In the connection dialog choose **Serverless (Security)**, then:
-
-1. Paste the project's **Elasticsearch endpoint** (`https://<project>.es.<region>.<provider>.elastic.cloud`) and **Kibana URL** (`https://<project>.kb...`).
-2. Paste an **API key** created in Kibana → Stack Management → API keys. Serverless has no username/password access, so Basic Auth is disabled.
-
-Known serverless differences: the connection test uses `GET /` (no `/_cluster/health`), Kibana calls send `elastic-api-version`, and direct writes to `.alerts-security.alerts-default` (APT scenario alerts) may be restricted. ML anomaly detection requires a Security or Observability project.
-
-Version 1 (`v1.0.0`, branch `release/1.x`) supports Elastic Cloud Hosted / self-managed only.
-
-#### AlertZero demo (v2, serverless Security only)
-
-The **AlertZero** tab seeds data for all four Watches and runs the Workers on demand:
-
-1. **Seed:** 5 tagged custom rules (one deliberately noisy), a Defend-shaped attack chain plus benign noise, and closed false-positive alerts for Rule Tuning.
-2. **Run Workers:** Alert Triage, Attack Discovery, Continuous Threat Hunt, Rule Tuning and Rule Coverage, in sequence or one by one, via the Workflows API (`/api/workflows/workflow/{id}/run`). Runs are billed (workflow executions, Agent Builder, model tokens).
-3. **Approve in Kibana:** proposed actions stay a human step (Security → AlertZero). Approving the Attack Discovery handoff starts Endpoint Analysis.
-4. **Hunt IOC:** after Continuous Threat Hunt builds its first threat reports, seed a matching event, then run it again.
-5. **Reset:** removes only objects tagged `alertzero-demo`.
+The connection (including the API key) is saved in your browser's `localStorage` under `elastic_config_forge`. Optional fields in the same dialog: an alert **email address** and **email connector ID** for per-alert notifications.
 
 #### Creating an API key
 
-In Kibana, go to **Stack Management → API Keys → Create API key**, or run:
+**Serverless:** create the key in Kibana → **Stack Management → API keys**. (The `/_security/api_key` call below needs basic auth, which serverless does not offer.)
+
+**Hosted / self-managed:** in Kibana go to **Stack Management → API Keys**, or run:
 
 ```bash
 curl -X POST "https://<ES_URL>/_security/api_key" \
@@ -103,7 +95,7 @@ curl -X POST "https://<ES_URL>/_security/api_key" \
       "demo_writer": {
         "cluster": ["monitor"],
         "indices": [{
-          "names": ["logs-*", ".alerts-security.alerts-default"],
+          "names": ["logs-*", "metrics-*", ".alerts-security.alerts-default"],
           "privileges": ["create_doc", "auto_configure"]
         }]
       }
@@ -111,13 +103,13 @@ curl -X POST "https://<ES_URL>/_security/api_key" \
   }'
 ```
 
-> The `.alerts-security.alerts-default` index permission is required for APT scenario alerts.
+> `.alerts-security.alerts-default` write access is needed for APT scenario alerts. A key that only writes indices cannot create detection rules, ML jobs or run Workers: those need Kibana and `manage_ml` / Workflows privileges. The AlertZero demo has been tested end to end with a broad-privilege key; narrower scoping has not been verified.
 
 ---
 
 ## Features
 
-### Log Generators
+### Log generators
 
 Each vendor card lets you configure:
 
@@ -125,63 +117,90 @@ Each vendor card lets you configure:
 |---|---|
 | **Log volume** | Low / Medium / High |
 | **Randomness** | Controls the pool of unique hostnames, users, and IPs |
-| **Time range** | Spread logs over 1–24 hours |
+| **Time range** | Last 15 minutes, 1 hour, 6 hours, 24 hours or 7 days (with an optional "logs per day" mode for 7 days) |
 | **Hostname prefix** | e.g. `CORP-WIN` → generates `CORP-WIN-001`, `CORP-WIN-002`, … |
 | **Max unique hosts** | Cap the hostname pool to force cross-event correlation |
 | **Include admin users** | Mix in privileged account names (Administrator, svc_backup, etc.) |
 | **Index override** | Send to a custom index instead of the default integration index |
 
+Pushes are sent in batches so the cluster isn't flooded.
+
 #### Supported vendors and their default indices
 
-| Vendor | Default Index | Elastic Integration |
-|---|---|---|
-| Fortinet FortiGate | `logs-fortinet.firewall-default` | [Fortinet FortiGate](https://www.elastic.co/docs/reference/integrations/fortinet) |
-| Palo Alto PAN-OS | `logs-panw.panos-5.5.0` | [Palo Alto Networks](https://www.elastic.co/docs/reference/integrations/panw) |
-| Cisco Switch | `logs-cisco.ios-default` | [Cisco](https://www.elastic.co/docs/reference/integrations/cisco) |
-| Microsoft Exchange | `logs-o365.audit-default` | [Microsoft 365](https://www.elastic.co/docs/reference/integrations/o365) |
-| Elastic Endpoint | `logs-endpoint.events.process-default` | [Elastic Defend](https://www.elastic.co/guide/en/security/current/install-endpoint.html) |
-| Windows Event Logs | `logs-system.security-default` | [Windows](https://www.elastic.co/docs/reference/integrations/windows) |
-| Linux / Syslog | `logs-system.auth-default` | [System](https://www.elastic.co/docs/reference/integrations/system) |
+| Vendor | Default indices |
+|---|---|
+| Fortinet FortiGate | `logs-fortinet.fortigate.traffic-default`, `logs-fortinet.fortigate.utm-default` |
+| Palo Alto Networks | `logs-panw.panos-5.5.0` |
+| Cisco Switches | `logs-cisco.ios-default` |
+| E-Mail Systems (O365 / Exchange) | `logs-o365.audit-default`, `logs-microsoft_exchange_server.log-default` |
+| Endpoint Telemetry | `logs-endpoint.events.process-default`, `logs-endpoint.alerts-default` |
+| Windows Events | `logs-windows.security-default`, `.application-`, `.system-`, `.powershell_operational-`, `.applocker-default` |
+| Linux / Syslog | `logs-system.auth-default`, `logs-auditd.log-default` |
+| Oracle Database | `logs-oracle.audit-default`, `metrics-oracle.performance-default` |
+| Microsoft SQL Server | `logs-microsoft_sqlserver.{audit,log,agent}-default`, `metrics-microsoft_sqlserver.{transaction_log,performance}-default` |
+| AWS CloudTrail | `logs-aws.cloudtrail-default` |
+| Okta | `logs-okta.system-default` |
+| CrowdStrike Falcon | `logs-crowdstrike.{falcon,fdr,alert,vulnerability,host}-default` |
+| Windows DNS & AD | `logs-windows.sysmon_operational-default`, `logs-windows.security-default` |
 
-#### Windows log types
+For the best result install the matching [Elastic integrations](https://www.elastic.co/integrations) first (**Fleet → Integrations**) so index templates and mappings exist.
 
-Security, Application, and System logs are enabled by default. AppLocker and PowerShell Script Block logging are optional and disabled by default (shown in red — enable them to simulate more advanced attack telemetry).
+Windows Security, Application and System logs are on by default; AppLocker and PowerShell Script Block logging are optional.
 
 ---
 
 ### Attack Scenarios
 
-The **Scenarios** tab provides pre-built attack chains. Two types:
+The **Attack Scenarios** tab provides pre-built attack chains.
 
-#### APT Scenarios (generate Kibana security alerts)
+#### APT scenarios (generate Kibana security alerts)
 
-These push structured `kibana.alert.*` documents directly to `.alerts-security.alerts-default`, making them immediately visible in Kibana Security and ready for [Attack Discovery](https://www.elastic.co/guide/en/security/current/attack-discovery.html).
+These push structured `kibana.alert.*` documents to `.alerts-security.alerts-default`, together with correlated logs, so they show up in Kibana Security and are ready for Attack Discovery. Rule links work because the forge creates matching (disabled) detection rules through the Kibana API when a Kibana URL is configured.
 
-| Scenario | Tactics | Alerts |
-|---|---|---|
-| **APT29 — Midnight Blizzard** | Initial Access → Execution → Persistence → Defense Evasion → Privilege Escalation → Credential Access → Discovery → Lateral Movement → Collection → C2 → Exfiltration | 15 |
-| **APT — Living off the Land** | Execution → Persistence → Defense Evasion → Privilege Escalation → Credential Access → Discovery → Lateral Movement → Collection → Exfiltration | 11 |
+| Scenario | Notes |
+|---|---|
+| **APT29 — Midnight Blizzard** | OAuth phishing → persistence → credential dump → lateral movement → C2 → exfiltration (15 alerts) |
+| **APT — Living off the Land** | certutil → mshta → schtasks → log clearing → NTDS dump → WMI → exfil (11 alerts) |
+| **Ransomware Outbreak** | Office macro → PowerShell → VSS/backup deletion → Defender disabled → encryption → SMB spread |
 
-Each APT scenario uses **real, verified IOCs** from CISA advisories and public threat intelligence:
+Each APT scenario uses publicly disclosed IOCs from CISA advisories, Mandiant and Microsoft MSTIC reporting (SHA256 hashes, C2 IPs and domains). They are included for SOC investigation demos only.
 
-- **SHA256 hashes** — SUNBURST, SUPERNOVA, TEARDROP, RAINDROP, EnvyScout, NativeZone, BoomBox, GraphicalProton (CISA AA20-352A, AA21-148A, AA22-074A, AA23-347A)
-- **C2 IP addresses** — 24 addresses attributed to APT29/NOBELIUM infrastructure
-- **C2 and phishing domains** — including `avsvmcloud.com`, `theyardservice.com`, `deftsecurity.com`, and others from Mandiant/Microsoft MSTIC reporting
+#### Raw log scenarios
 
-> All IOCs are publicly disclosed and detectable on [VirusTotal](https://www.virustotal.com). They are included for SOC investigation demo purposes only.
-
-#### Raw Log Scenarios
-
-These generate structured event logs viewable step-by-step in the UI:
-
-- Phishing Attack
-- Phishing + Lateral Movement
-- Data Exfiltration
-- Ransomware
+Structured event logs viewable step by step: **Phishing Attack**, **Phishing + Lateral Movement**, **Data Exfiltration**.
 
 #### Background noise
 
-APT scenarios can be paired with background noise (Low / Medium / High) that generates concurrent logs across multiple vendors, giving Attack Discovery a realistic signal-to-noise environment to correlate through.
+Pair any APT scenario with noise: Low, Medium, High, or Custom (a mix of Windows, Linux, email, firewall and database logs with a configurable count).
+
+#### Email notifications
+
+If you set an alert email and connector ID in the connection dialog, one email is sent per generated alert (silently — it never blocks a push).
+
+---
+
+### ML anomaly detection
+
+The scenarios page has an **ML Anomaly Detection** section:
+
+- **ML setup card** creates two demo jobs and their detection rules: *Rare Source IP per User* and *Unusual Login Hour per User*. The datafeed starts 7 days back so seeded history is processed.
+- **Impossible Travel** and **Unusual Login Time** scenario cards generate the matching authentication events.
+
+On Serverless this requires a Security or Observability project.
+
+---
+
+### AlertZero demo (v2, Serverless Security)
+
+The **AlertZero** tab seeds data for all four Watches and runs the Workers on demand:
+
+1. **Seed** five tagged custom rules (one deliberately noisy), a Defend-shaped attack chain with benign noise, and closed false-positive alerts for Rule Tuning.
+2. **Pick the endpoint** the attack is attributed to: *Simulated* (generated agent, so Endpoint Analysis proposes isolate / kill / suspend without anything executing) or *Real enrolled host* (loaded from your project).
+3. **Run Workers** through the Workflows API, one by one or in sequence.
+4. **Approve in Kibana** (Security → AlertZero → Proposed actions) — approvals stay a human step.
+5. **Reset** removes only what carries the `alertzero-demo` tag.
+
+Runs are billed (workflow executions, Agent Builder, model tokens). Full guide, expected results and troubleshooting: **[docs/ALERTZERO.md](docs/ALERTZERO.md)**.
 
 ---
 
@@ -189,39 +208,27 @@ APT scenarios can be paired with background noise (Low / Medium / High) that gen
 
 ### Index templates and data streams
 
-Elastic Demo Forge writes to the standard integration indices. For the best experience, install the relevant [Elastic integrations](https://www.elastic.co/integrations) in Kibana (**Fleet → Integrations**) before pushing data — this ensures the index templates, ILM policies, and field mappings are in place.
-
-Minimum recommended integrations:
-
-- Elastic Defend (Endpoint)
-- Windows
-- System
-- Fortinet FortiGate
-- Palo Alto Networks
+The forge writes to the standard integration indices. Install the relevant integrations first. Minimum recommended: Elastic Defend (Endpoint), Windows, System, Fortinet FortiGate, Palo Alto Networks.
 
 ### For Attack Discovery demos
 
-1. Enable **Elastic Security** in Kibana
-2. Ensure the `.alerts-security.alerts-default` index exists (created automatically when Elastic Security is enabled)
+1. Enable **Elastic Security** in Kibana and configure an AI connector for Attack Discovery
+2. Ensure `.alerts-security.alerts-default` exists (created when Elastic Security is enabled)
 3. Push an APT scenario with **medium or high** background noise
 4. Open **Kibana → Security → Attack Discovery** and run a discovery
 
-The correlated alerts across `host.name`, `user.name`, MITRE tactics, and IOCs will be grouped into a single APT discovery with the full kill chain.
+Correlated alerts across `host.name`, `user.name`, MITRE tactics and IOCs are grouped into a single discovery with the full kill chain.
 
 ---
 
-## Build for production
+## Build
 
 ```bash
-npm run build
+npm run build     # output in dist/
+npm run lint
 ```
 
-Output is written to `dist/`. Serve it with any static file host (Nginx, S3 + CloudFront, GitHub Pages, Netlify, etc.).
-
-```bash
-# Preview the production build locally
-npm run preview
-```
+`dist/` is a static bundle, but see the note under [Quickstart](#2-start-the-dev-server): the app needs the dev server's proxy routes to reach your cluster.
 
 ---
 
@@ -230,40 +237,45 @@ npm run preview
 ```
 elastic-demo-forge/
 ├── src/
-│   ├── App.jsx          # All generators, scenarios, and UI (single-file architecture)
-│   ├── App.css          # Global styles
-│   ├── main.jsx         # React entry point
-│   └── index.css        # Tailwind base
-├── index.html
-├── vite.config.js
+│   ├── App.jsx            # Generators, scenarios, ML, and main UI (single-file architecture)
+│   ├── elastic.js         # Connection config, auth headers, ES/Kibana fetch helpers (hosted + serverless)
+│   ├── alertzero.js       # AlertZero: rules, seed data, Worker listing/running, reset
+│   ├── AlertZeroPage.jsx  # AlertZero tab UI
+│   ├── App.css, index.css, main.jsx
+├── docs/
+│   └── ALERTZERO.md       # AlertZero walkthrough
+├── CHANGELOG.md
+├── vite.config.js         # Dev server + /es-proxy and /kibana-proxy middleware
 ├── tailwind.config.js
 └── package.json
 ```
 
-All log generators, vendor ingest mappings, scenario generators, and UI components live in `src/App.jsx`.
+Log generators, vendor ingest mappings, scenario generators and most UI live in `src/App.jsx`. Connection handling lives in `src/elastic.js` so the AlertZero module shares it.
 
 ---
 
 ## Adding a new vendor
 
-1. Write a generator function: `function generateMyVendorLogs(count, timeRangeMinutes) { ... }` — returns an array of raw log strings
+1. Write a generator: `function generateMyVendorLogs(count, timeRangeMinutes) { ... }` — returns an array of raw log strings
 2. Add an ingest mapping to `VENDOR_INGEST`: `{ getIndex(raw) { return 'logs-myvendor-default'; }, toDoc(raw) { return { '@timestamp': ..., message: raw, ... }; } }`
-3. Add a vendor entry to the `VENDORS` array with `id`, `name`, `description`, `tags`, `indices`, and `generator`
+3. Add a vendor entry to `VENDORS` with `id`, `name`, `description`, `tags`, `indices`, and `generator`
 
 ---
 
 ## Security and data handling
 
-- **No data leaves your browser** except to the Elasticsearch cluster you configure
-- No backend, no telemetry, no external API calls
-- API keys are stored only in React state (cleared on page reload)
-- IOCs included in this tool are publicly disclosed threat intelligence from CISA, Mandiant, and Microsoft — they are not operational malware
+- No backend of ours and no telemetry. The browser talks to the local dev server, which forwards requests only to the Elasticsearch and Kibana URLs you configure.
+- Your connection settings, **including the API key or password, are stored in the browser's `localStorage`** (key `elastic_config_forge`) until you clear them. Use a dedicated, least-privilege key and clear site data on shared machines.
+- The dev-server proxy accepts self-signed certificates (`rejectUnauthorized: false`) so local clusters work. Don't point it at an untrusted endpoint.
+- The vendor cards load logos from the Simple Icons CDN; nothing else leaves your machine.
+- The AlertZero tab **creates and deletes** objects (detection rules, demo data streams, tagged alerts) and can start billed Worker runs. It asks for confirmation before runs and before reset. Only use it against projects you own.
+- IOCs are publicly disclosed threat intelligence from CISA, Mandiant and Microsoft — not operational malware.
 
 ---
 
 ## Disclaimer
 
-This tool is intended for **authorised demo, testing, and training purposes only** against Elasticsearch clusters you own or have explicit permission to write to. The IOCs (file hashes, IP addresses, domains) are publicly disclosed indicators from official threat intelligence sources and are included solely to demonstrate SOC investigation workflows in Elastic Security.
+This tool is intended for **authorised demo, testing and training purposes only** against Elastic deployments you own or have explicit permission to write to. The IOCs are publicly disclosed indicators included solely to demonstrate SOC investigation workflows in Elastic Security.
 
 ---
 
