@@ -199,7 +199,8 @@ The **AlertZero** tab seeds data for all four Watches and runs the Workers on de
 3. **Run Workers** through the Workflows API, one by one or in sequence.
 4. **Hunt on a threat report:** pick a report and one of its IOCs, seed a matching event and run Continuous Threat Hunt on that report.
 5. **Approve in Kibana** (Security → AlertZero → Proposed actions) — approvals stay a human step.
-6. **Reset** removes only what carries the `alertzero-demo` tag.
+6. **Clean proposals** dismisses pending proposals through the Workflows API (preview first; demo-only or everything). It can only dismiss, never approve.
+7. **Reset** removes only what carries the `alertzero-demo` tag.
 
 Runs are billed (workflow executions, Agent Builder, model tokens). Full guide, expected results and troubleshooting: **[docs/ALERTZERO.md](docs/ALERTZERO.md)**.
 

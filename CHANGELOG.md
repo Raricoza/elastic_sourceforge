@@ -6,6 +6,7 @@ Versions follow `MAJOR.MINOR.PATCH`. **v1.x** is Elastic Cloud Hosted / self-man
 
 ### Added
 - **Hunt report picker** (AlertZero tab): load the threat reports from `.kibana-threat-reports`, filter to reports with discriminating / uncertain IOCs, pick a report and an IOC, seed a matching event (IP, domain, URL or file hash) and run Continuous Threat Hunt on that report through a `reportIds` bypass sweep. Reports are shown with severity, source and hunt status, which refreshes after the run.
+- **Clean proposals** (AlertZero tab): preview and dismiss pending proposals through the Workflows API (`POST /api/workflows/executions/{id}/resume` with `approved: false`). Scope: demo only or everything pending. Dismiss-only by construction; it never approves, so no proposed action can run.
 - `seedHuntIoc` accepts URLs and generic file hashes (MD5 / SHA-1 / SHA-256).
 
 ## [2.0.0] — 2026-11-23 (`main`)

@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { isServerless } from './elastic.js';
-import { WORKERS, SEQUENCE, createRules, listEndpoints, seedEvents, seedFalsePositives, seedHuntIoc, listThreatReports, iocSeedArg, resetDemo, workerStatus, runWorker, waitForRun } from './alertzero.js';
+import { WORKERS, SEQUENCE, createRules, listEndpoints, seedEvents, seedFalsePositives, seedHuntIoc, listThreatReports, iocSeedArg, listPendingProposals, dismissProposals, resetDemo, workerStatus, runWorker, waitForRun } from './alertzero.js';
 
 const inputCls = 'w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500';
 function Btn({ children, onClick, disabled, tone = 'blue' }) {
@@ -32,6 +32,8 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
   const [reportPick, setReportPick] = useState('');
   const [iocPick, setIocPick] = useState(0);
   const [onlyUseful, setOnlyUseful] = useState(true);
+  const [proposals, setProposals] = useState(null);
+  const [propScope, setPropScope] = useState('demo'); // 'demo' | 'all'
   const [epMode, setEpMode] = useState('simulated'); // 'simulated' | 'real'
   const [endpoints, setEndpoints] = useState(null);
   const [epPick, setEpPick] = useState('');
@@ -93,6 +95,24 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
     const map = await createRules(cfg, log);
     await seedEvents(cfg, { noiseHosts, endpoint: endpointOpt(), victim }, log);
     await seedFalsePositives(cfg, { count: fpCount, ruleMap: map }, log);
+  });
+  const inScope = p => propScope === 'all' || p.demo;
+  const scopedProposals = (proposals || []).filter(inScope);
+  const previewProposals = wrap('preview proposals', async () => {
+    let last = 0;
+    const list = await listPendingProposals(cfg, (n, t) => { if (n === t || n - last >= 25) { last = n; log(`reading proposals ${n}/${t}`); } });
+    setProposals(list);
+    log(`${list.length} pending proposal(s); ${list.filter(x => x.demo).length} match the demo`);
+  });
+  const dismissAll = wrap('dismiss proposals', async () => {
+    const targets = scopedProposals;
+    if (!targets.length) { log('nothing to dismiss in this scope'); return; }
+    const withAction = targets.filter(t => t.action).length;
+    const msg = `Dismiss ${targets.length} pending proposal(s) (${propScope === 'all' ? 'EVERYTHING pending, including real scheduled output' : 'demo only'})?\n\n${withAction} of them carry an action (isolate / kill / close alerts / rule change). Dismissing never runs the action, but the proposals are gone from the queue and may be re-raised by a later Worker run.`;
+    if (!window.confirm(msg)) return;
+    const r = await dismissProposals(cfg, targets.map(t => t.id), (n, t) => { if (n === t || n % 10 === 0) log(`dismissing ${n}/${t}`); });
+    log(`dismissed ${r.ok}, failed ${r.failed.length}${r.failed[0] ? ' — first: ' + r.failed[0].error : ''}`);
+    setProposals(await listPendingProposals(cfg));
   });
   const dry = wrap('reset (dry run)', async () => { await resetDemo(cfg, { dryRun: true }, log); });
   const wipe = wrap('reset', async () => {
@@ -252,7 +272,36 @@ export default function AlertZeroPage({ elasticConfig: cfg }) {
         </details>
       </Card>
 
-      <Card step="4" title="Reset">
+      <Card step="4" title="Clean proposals">
+        <p className="text-[11px] text-gray-500">Dismisses pending proposals through the Workflows API so you can start a rehearsal with an empty queue. It only ever <b>dismisses</b>: a dismissed proposal never runs its action. It does not remove alerts or investigations, so a later Worker run can raise a proposal again.</p>
+        <div className="flex gap-2">
+          {[['demo', 'Demo only'], ['all', 'Everything pending']].map(([v, l]) => (
+            <button key={v} onClick={() => setPropScope(v)} className={`flex-1 h-8 text-xs font-medium rounded-lg border transition-all ${propScope === v ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:text-white'}`}>{l}</button>
+          ))}
+        </div>
+        {propScope === 'all' && <p className="text-[11px] text-amber-400">This also clears real output from the scheduled Workers (for example detection-gap reviews), not just the demo's.</p>}
+        <div className="flex flex-wrap gap-2 items-center">
+          <Btn onClick={previewProposals} disabled={!!busy}>{busy === 'preview proposals' ? 'Reading…' : proposals ? 'Refresh preview' : 'Preview pending proposals'}</Btn>
+          <Btn tone="red" onClick={dismissAll} disabled={!!busy || !scopedProposals.length}>{busy === 'dismiss proposals' ? 'Dismissing…' : `Dismiss ${scopedProposals.length || ''} proposal${scopedProposals.length === 1 ? '' : 's'}`}</Btn>
+          {proposals && <span className="text-[11px] text-gray-500">{scopedProposals.length} in scope of {proposals.length} pending</span>}
+        </div>
+        {proposals && (
+          <div className="max-h-56 overflow-auto divide-y divide-gray-800 border border-gray-800 rounded-lg">
+            {!scopedProposals.length && <p className="px-3 py-2 text-xs text-gray-500">Nothing pending in this scope.</p>}
+            {scopedProposals.map(p => (
+              <div key={p.id} className="px-3 py-1.5 text-xs flex items-center gap-2" title={p.snippet}>
+                <span className="text-gray-500 w-12 shrink-0">{String(p.startedAt).slice(11, 16)}</span>
+                <span className="w-20 shrink-0 text-gray-500">{p.category || '—'}</span>
+                <span className="flex-1 truncate text-gray-200">{p.title}</span>
+                {p.action && <span className="shrink-0 text-amber-400 text-[10px]">has action</span>}
+                {p.demo && <span className="shrink-0 text-blue-400 text-[10px]">demo</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card step="5" title="Reset">
         <p className="text-[11px] text-gray-500">Removes only what carries the <code>alertzero-demo</code> tag: rules, demo data streams and tagged alerts. Real Defend data is untouched.</p>
         <div className="flex gap-2"><Btn onClick={dry} disabled={!!busy}>Dry run</Btn><Btn tone="red" onClick={wipe} disabled={!!busy}>Reset…</Btn></div>
       </Card>

@@ -43,7 +43,7 @@ Cost: each Worker run counts as a workflow execution, each AI analysis as an Age
 | 4 | Kibana → Security → AlertZero → Proposed actions | Review **Investigate** and **Configure** items; approve the forensic handoff |
 | 5 | wait ~5 min | Endpoint Analysis runs |
 | 6 | Proposed actions → **Respond** | Show the recommended isolate / kill / suspend and the reasoning |
-| 7 | Forge → AlertZero | **Reset** when done |
+| 7 | Forge → AlertZero | **Clean proposals** and **Reset** when done |
 
 ---
 
@@ -117,7 +117,21 @@ Why a named report: a manual run with **no** `reportIds` selects candidates the 
 
 **Verified (live):** hunting a report already marked `clean` re-hunted it and recorded a **hit** (a critical Cloud Accounts T1078.004 finding for user `asmith`), one proposal behind an approval gate, and 3 coverage items for the Detection Watch. The picker's listing was verified against the live project (64 reports, 5 with seedable discriminating/uncertain IOCs); the picker UI was exercised end to end against a mock, not yet clicked through against the live project. Seeded events use the host `ws-eng-12` and user `asmith`.
 
-### 4.6 Reset
+### 4.6 Clean proposals
+
+Between rehearsals the Proposed actions queue fills up with old items (in the test project, 104 were pending, 100 of them scheduled *Review detection gap* items). **Clean proposals** dismisses them through the Workflows API:
+
+1. **Preview pending proposals** lists every pending proposal with its queue section, title, time, whether it carries an action, and a *demo* tag.
+2. Choose the scope: **Demo only** (default) matches the demo's rule names (`AZ Demo`) and seeded hosts (`ws-finance-NN`, `ws-eng-12`, `srv-fileshare-02`, `svc-inventory`); **Everything pending** also clears real output from the scheduled Workers and carries a stronger warning.
+3. **Dismiss N proposals** asks for confirmation, stating how many carry an action, then dismisses them a few at a time and reports dismissed / failed counts.
+
+How it works: every pending proposal is a `system-create-proposal` run parked at its approval gate (`waiting_for_input`). The forge answers the gate with `POST /api/workflows/executions/{id}/resume` and the body `{"input":{"approved":false}}`. **It can only dismiss.** Approving would run the proposed action (isolate a host, kill a process, close alerts, change a rule), and the code has no approve path.
+
+**Verified (live):** dismissing one parked proposal was recorded by the gate as `approved: false`, `decision: dismissed`, `status: no_action`; the resolve workflow ran, no action workflow executed, and the parked count dropped by one. The live preview read all 104 pending proposals in about 6 seconds and classified 4 as demo. The bulk dismissal UI was tested against a mock, where every resume call carried exactly the dismiss body.
+
+Limits: it removes proposals from the queue, not the alerts or investigations behind them, so a later Worker run can raise a proposal again. Dismissals are attributed to the API key's identity. The key must be allowed to decide proposals.
+
+### 4.7 Reset
 
 **Dry run** counts what would go; **Reset…** removes, after a confirmation, only objects tagged `alertzero-demo`:
 
@@ -125,7 +139,7 @@ Why a named report: a manual run with **no** `reportIds` selects candidates the 
 - the data streams `logs-endpoint.events.process-demo`, `logs-endpoint.events.network-demo`, `logs-demo.hunt-default`,
 - tagged alerts (`_delete_by_query` on the alerts index; **verified to work on Serverless**; if a project ever refuses it the tab says so).
 
-It does not remove proposals, investigations or Worker settings, and never touches real Defend data. The full reset was verified against a mock; only the alert cleanup was verified live.
+It does not remove proposals (use **Clean proposals**), investigations or Worker settings, and never touches real Defend data. The full reset was verified against a mock; only the alert cleanup was verified live.
 
 ---
 
@@ -164,6 +178,7 @@ These are managed, Preview workflows and the IDs may change between versions. Al
 | **Rule Tuning requests 0 reviews** | The noisy rule's false-positive rate is under 50%, or the closed alerts lack `kibana.alert.rule.revision`. Seed more false positives (default 90) with the current forge. |
 | **Triage says `nothing_pending`** | The scheduled run already handled the alerts. Check Proposed actions. |
 | **Hunt selects 0 reports** | No new candidate threat reports. Use the **Hunt on a threat report** card to name a report (4.5). |
+| **Queue is full of old proposals** | Use **Clean proposals** (4.6); *Demo only* keeps the scheduled Workers' items. |
 | **Worker shows "not found"** | The managed workflow ID is missing: AlertZero may be off for the space, or the Workers aren't enabled. |
 | **Run fails with HTTP 403** | The API key lacks workflow privileges (`workflowsManagement:execute`, read executions). |
 | **`ws-…` alerts don't appear** | Wait 2–3 minutes; the rules run every minute with a 3-hour lookback. |

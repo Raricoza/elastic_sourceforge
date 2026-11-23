@@ -226,6 +226,56 @@ export async function seedHuntIoc(cfg, { domain, ip, sha256, hash, url }, log) {
   log?.(`hunt IOC event: ${r.ok} ok/${r.errors} err${r.firstError ? ' — ' + r.firstError : ''}`);
 }
 
+// ─── Proposals: preview and dismiss ──────────────────────────────────────────
+// Every pending proposal is a `system-create-proposal` run parked at its approval gate (status waiting_for_input).
+// Resuming the run answers the gate. This module can ONLY dismiss: approving would run the proposed action
+// (isolate a host, kill a process, close alerts, edit a rule), so no approve path exists here.
+const PROPOSAL_WORKFLOW = 'system-create-proposal';
+const DISMISS_BODY = Object.freeze({ input: Object.freeze({ approved: false }) });
+// What counts as "demo" for the scoped clean-up: demo rule names and the demo hosts this forge seeds.
+const DEMO_RE = /AZ Demo|alertzero-demo|ws-finance-\d+|ws-eng-12|srv-fileshare-02|svc-inventory/i;
+
+async function pool(items, limit, fn) {
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => { while (i < items.length) { const n = i++; out[n] = await fn(items[n], n); } }));
+  return out;
+}
+
+export async function listPendingProposals(cfg, onProgress) {
+  const ids = [];
+  for (let page = 1; page < 50; page++) {
+    const res = await fetchKibana(cfg, `/api/workflows/workflow/${PROPOSAL_WORKFLOW}/executions?statuses=waiting_for_input&size=100&page=${page}&omitStepRuns=true`);
+    const d = await jsonOf(res);
+    if (!res.ok) throw new Error(`list proposals: HTTP ${res.status} ${errText(d)}`);
+    const rows = rowsOf(d);
+    ids.push(...rows.map(r => ({ id: r.id, startedAt: r.startedAt })));
+    if (rows.length < 100) break;
+  }
+  let done = 0;
+  const items = await pool(ids, 6, async ({ id, startedAt }) => {
+    const res = await fetchKibana(cfg, `/api/workflows/executions/${id}?omitStepExecutions=true`);
+    const d = res.ok ? await jsonOf(res) : {};
+    const i = d?.context?.inputs || {};
+    onProgress?.(++done, ids.length);
+    const comment = i.comment || '';
+    return { id, startedAt, title: i.title || '(untitled)', category: i.category || '', action: i.actionWorkflowId || '', demo: DEMO_RE.test(`${i.title || ''} ${comment}`), snippet: comment.replace(/\s+/g, ' ').slice(0, 140) };
+  });
+  return items.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}
+
+// Dismisses (never approves) the given proposal runs. Returns { ok, failed: [{id, error}] }.
+export async function dismissProposals(cfg, ids, onProgress) {
+  let done = 0; const failed = [];
+  await pool(ids, 3, async id => {
+    try {
+      const res = await fetchKibana(cfg, `/api/workflows/executions/${id}/resume`, { method: 'POST', body: JSON.stringify(DISMISS_BODY) });
+      if (!res.ok) failed.push({ id, error: `HTTP ${res.status} ${errText(await jsonOf(res))}` });
+    } catch (e) { failed.push({ id, error: e.message }); }
+    onProgress?.(++done, ids.length);
+  });
+  return { ok: ids.length - failed.length, failed };
+}
+
 // ─── reset ───────────────────────────────────────────────────────────────────
 const STREAMS = ['logs-endpoint.events.process-demo', 'logs-endpoint.events.network-demo', 'logs-demo.hunt-default'];
 export async function resetDemo(cfg, { dryRun = true } = {}, log) {
